@@ -1,31 +1,90 @@
-# 📸 Web Page Snapshot Action
+# 🌐 Simple Web Page Source Code Downloader
 
-**Here is the [English version](https://github.com/SimpERROR/web-page-snapshot-action/blob/main/README-EN.md).**
+A lightweight GitHub Action that downloads the **source code of a web page**, including its HTML and CSS resources, and saves them on the GitHub Actions runner.
 
-一个基于 **Puppeteer** 的 GitHub Action，用于自动抓取网页截图并生成图片资源。
+This project is based on the [Web Page Snapshot Action](https://github.com/SimpERROR/web-page-snapshot-action) by **SimpERROR**. The original project was designed to take screenshots of web pages; this fork repurposes its structure to download web page source files instead.
 
-该 Action 会启动无头浏览器 (Headless Chrome)，访问指定 URL，截取全屏图片。
+## 🚀 How it works
 
-## 📷 效果展示
-> 悄悄告诉你…… 其实这张图片会在每日 0:00 自动更新 ( •̀ ω •́ )✧  尽管我也不知道有什么用……
+The action receives a URL, downloads the page source, and saves the resulting files on the runner.
 
-![示例图片](https://raw.githubusercontent.com/SimpERROR/web-page-snapshot-action/refs/heads/gh-pages/latest.png)
+Currently, the action is designed to download:
 
-## ⚙️ 输入参数 (Inputs)
+* 📄 HTML source code.
+* 🎨 CSS stylesheets referenced by the page.
 
-| 参数名 | 必填 | 默认值 | 描述 |
-| :--- | :---: | :--- | :--- |
-| `website` | **是** | https://www.bilibili.com/video/BV1GJ411x7h7 | 需要截取截图的目标网址 (例如 `https://example.com`)。 |
+It can be useful for:
 
-## 📤 输出参数 (Outputs)
+* 📥 Automatically downloading web page source code.
+* 🔍 Inspecting or processing HTML and CSS in CI/CD workflows.
+* 🧪 Testing the source of a web page automatically.
+* 📦 Saving web page source as build artifacts.
+* 🤖 Running automated scraping or analysis workflows.
 
-| 参数名 | 描述 |
-| :--- | :--- |
-| `snapshot-path` | 生成的截图在 runner 上的本地路径。 |
-| `image-size` | 截图尺寸（长 x 宽） |
-| `time` | 截图生成的时间。 |
-| `status` | 截图生成结果。 |
+## ⚙️ Inputs
 
-## 📄 许可证
+| Parameter | Required | Default                                       | Description                                                    |
+| :-------- | :------: | :-------------------------------------------- | :------------------------------------------------------------- |
+| `website` |  **Yes** | `https://www.bilibili.com/video/BV1GJ411x7h7` | The URL of the website whose source code should be downloaded. |
+
+## 📤 Outputs
+
+| Parameter   | Description                                                  |
+| :---------- | :----------------------------------------------------------- |
+| `html-path` | The path to the downloaded HTML file on the runner.          |
+| `status`    | The status of the download operation (`success` / `failed`). |
+| `time`      | The time when the download was performed.                    |
+
+> More outputs may be added as support for additional resources is implemented.
+
+## 🛠️ Example
+
+<!-- Example workflow will be added later. -->
+
+## 📦 Downloaded resources
+
+The action downloads the HTML source of the requested page and its referenced CSS stylesheets.
+
+For example, a page containing:
+
+```html
+<link rel="stylesheet" href="/css/style.css">
+```
+
+will have both the HTML document and the referenced stylesheet downloaded.
+
+CSS resources referenced through external URLs may also be downloaded when they are accessible to the action.
+
+## 🔧 Technical details
+
+The action runs using **Node.js 20** and its compiled entry point is located at:
+
+```text
+dist/index.js
+```
+
+The action is defined as:
+
+```yaml
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+```
+
+## ⚠️ Notes
+
+The action downloads the resources returned by the target website. It does not necessarily represent the final DOM or styles after JavaScript has modified the page in a browser.
+
+Websites may block automated requests, require authentication, or return different content depending on headers, cookies, location, or other request properties.
+
+Please make sure you have permission to download and process the content of the websites you target.
+
+## 📄 License
 
 MIT License
+
+### Credits
+
+Originally based on [SimpERROR/web-page-snapshot-action](https://github.com/SimpERROR/web-page-snapshot-action).
+
+The original project was created by **SimpERROR** and provided the initial GitHub Action structure used as the basis for this project.
