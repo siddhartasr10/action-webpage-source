@@ -21,7 +21,7 @@
     const USER = 'TU_USUARIO';
     const REPO = 'TU_REPOSITORIO';
     const trimmedURI = document.baseURI.slice(0,document.baseURI.length-1);
-    const PATH = String(document.trimmedURI.split("/").slice(4));
+    const PATH = String(trimmedURI.split("/").slice(4));
 
     fetch(`https://api.github.com/repos/siddhartasr10/web-page-snapshot-html-action/contents/${PATH}?ref=gh-pages`)
       .then(res => res.json())
