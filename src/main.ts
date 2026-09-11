@@ -79,14 +79,14 @@ async function run() {
       fs.mkdirSync(Rootdir, { recursive: true });
     }
     
-    const sourceDir = path.join(Rootdir, pageTitle);
+    const sourceDir = path.join(Rootdir, `${pageTitle}-${timestamp}`);
     if (!fs.existsSync(sourceDir)) {
       fs.mkdirSync(sourceDir, { recursive: true });
     }
 
     
     // const filename = `snapshot-${timestamp}.png`;
-    const htmlFilename = `${pageTitle}-${timestamp}.html`;
+    const htmlFilename = `${pageTitle}.html`;
     const htmlPath = path.join(sourceDir, htmlFilename); // this was snapshotPath 
     const html = await page.content();
 
