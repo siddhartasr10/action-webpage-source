@@ -25618,6 +25618,9 @@ class Range {
   }
 
   parseRange (range) {
+    // strip build metadata so it can't bleed into the version
+    range = range.replace(BUILDSTRIPRE, '')
+
     // memoize range parsing for performance.
     // this is a very hot path, and fully deterministic.
     const memoOpts =
@@ -25743,12 +25746,16 @@ const debug = __nccwpck_require__(73289)
 const SemVer = __nccwpck_require__(6973)
 const {
   safeRe: re,
+  src,
   t,
   comparatorTrimReplace,
   tildeTrimReplace,
   caretTrimReplace,
 } = __nccwpck_require__(47377)
 const { FLAG_INCLUDE_PRERELEASE, FLAG_LOOSE } = __nccwpck_require__(45183)
+
+// unbounded global build-metadata stripper used by parseRange
+const BUILDSTRIPRE = new RegExp(src[t.BUILD], 'g')
 
 const isNullSet = c => c.value === '<0.0.0-0'
 const isAny = c => c.value === ''
@@ -25790,6 +25797,11 @@ const parseComparator = (comp, options) => {
 
 const isX = id => !id || id.toLowerCase() === 'x' || id === '*'
 
+const invalidXRangeOrder = (M, m, p) => (
+  (isX(M) && !isX(m)) ||
+  (isX(m) && p && !isX(p))
+)
+
 // ~, ~> --> * (any, kinda silly)
 // ~2, ~2.x, ~2.x.x, ~>2, ~>2.x ~>2.x.x --> >=2.0.0 <3.0.0-0
 // ~2.0, ~2.0.x, ~>2.0, ~>2.0.x --> >=2.0.0 <2.1.0-0
@@ -25807,6 +25819,10 @@ const replaceTildes = (comp, options) => {
 
 const replaceTilde = (comp, options) => {
   const r = options.loose ? re[t.TILDELOOSE] : re[t.TILDE]
+  // if we're including prereleases in the match, then the lower bound is
+  // -0, the lowest possible prerelease value, just like x-ranges and carets.
+  // this keeps `~1.2` equivalent to the `1.2.x` x-range it's documented as.
+  const z = options.includePrerelease ? '-0' : ''
   return comp.replace(r, (_, M, m, p, pr) => {
     debug('tilde', comp, _, M, m, p, pr)
     let ret
@@ -25814,10 +25830,10 @@ const replaceTilde = (comp, options) => {
     if (isX(M)) {
       ret = ''
     } else if (isX(m)) {
-      ret = `>=${M}.0.0 <${+M + 1}.0.0-0`
+      ret = `>=${M}.0.0${z} <${+M + 1}.0.0-0`
     } else if (isX(p)) {
       // ~1.2 == >=1.2.0 <1.3.0-0
-      ret = `>=${M}.${m}.0 <${M}.${+m + 1}.0-0`
+      ret = `>=${M}.${m}.0${z} <${M}.${+m + 1}.0-0`
     } else if (pr) {
       debug('replaceTilde pr', pr)
       ret = `>=${M}.${m}.${p}-${pr
@@ -25886,10 +25902,10 @@ const replaceCaret = (comp, options) => {
       if (M === '0') {
         if (m === '0') {
           ret = `>=${M}.${m}.${p
-          }${z} <${M}.${m}.${+p + 1}-0`
+          } <${M}.${m}.${+p + 1}-0`
         } else {
           ret = `>=${M}.${m}.${p
-          }${z} <${M}.${+m + 1}.0-0`
+          } <${M}.${+m + 1}.0-0`
         }
       } else {
         ret = `>=${M}.${m}.${p
@@ -25915,6 +25931,10 @@ const replaceXRange = (comp, options) => {
   const r = options.loose ? re[t.XRANGELOOSE] : re[t.XRANGE]
   return comp.replace(r, (ret, gtlt, M, m, p, pr) => {
     debug('xRange', comp, ret, gtlt, M, m, p, pr)
+    if (invalidXRangeOrder(M, m, p)) {
+      return comp
+    }
+
     const xM = isX(M)
     const xm = xM || isX(m)
     const xp = xm || isX(p)
@@ -26091,6 +26111,22 @@ const { safeRe: re, t } = __nccwpck_require__(47377)
 
 const parseOptions = __nccwpck_require__(68174)
 const { compareIdentifiers } = __nccwpck_require__(49062)
+
+const isPrereleaseIdentifier = (prerelease, identifier) => {
+  const identifiers = identifier.split('.')
+  if (identifiers.length > prerelease.length) {
+    return false
+  }
+
+  for (let i = 0; i < identifiers.length; i++) {
+    if (compareIdentifiers(prerelease[i], identifiers[i]) !== 0) {
+      return false
+    }
+  }
+
+  return true
+}
+
 class SemVer {
   constructor (version, options) {
     options = parseOptions(options)
@@ -26394,8 +26430,9 @@ class SemVer {
           if (identifierBase === false) {
             prerelease = [identifier]
           }
-          if (compareIdentifiers(this.prerelease[0], identifier) === 0) {
-            if (isNaN(this.prerelease[1])) {
+          if (isPrereleaseIdentifier(this.prerelease, identifier)) {
+            const prereleaseBase = this.prerelease[identifier.split('.').length]
+            if (isNaN(prereleaseBase)) {
               this.prerelease = prerelease
             }
           } else {
@@ -26928,6 +26965,62 @@ module.exports = sort
 
 /***/ }),
 
+/***/ 31284:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+const parse = __nccwpck_require__(39499)
+const constants = __nccwpck_require__(45183)
+const SemVer = __nccwpck_require__(6973)
+
+const truncate = (version, truncation, options) => {
+  if (!constants.RELEASE_TYPES.includes(truncation)) {
+    return null
+  }
+
+  const clonedVersion = cloneInputVersion(version, options)
+  return clonedVersion && doTruncation(clonedVersion, truncation)
+}
+
+const cloneInputVersion = (version, options) => {
+  const versionStringToParse = (
+    version instanceof SemVer ? version.version : version
+  )
+
+  return parse(versionStringToParse, options)
+}
+
+const doTruncation = (version, truncation) => {
+  if (isPrerelease(truncation)) {
+    return version.version
+  }
+
+  version.prerelease = []
+
+  switch (truncation) {
+    case 'major':
+      version.minor = 0
+      version.patch = 0
+      break
+    case 'minor':
+      version.patch = 0
+      break
+  }
+
+  return version.format()
+}
+
+const isPrerelease = (type) => {
+  return type.startsWith('pre')
+}
+
+module.exports = truncate
+
+
+/***/ }),
+
 /***/ 76418:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -26978,6 +27071,7 @@ const gte = __nccwpck_require__(85322)
 const lte = __nccwpck_require__(90655)
 const cmp = __nccwpck_require__(32716)
 const coerce = __nccwpck_require__(91447)
+const truncate = __nccwpck_require__(31284)
 const Comparator = __nccwpck_require__(97061)
 const Range = __nccwpck_require__(83820)
 const satisfies = __nccwpck_require__(62853)
@@ -27016,6 +27110,7 @@ module.exports = {
   lte,
   cmp,
   coerce,
+  truncate,
   Comparator,
   Range,
   satisfies,
@@ -27361,7 +27456,7 @@ createToken('LOOSE', `^${src[t.LOOSEPLAIN]}$`)
 createToken('GTLT', '((?:<|>)?=?)')
 
 // Something like "2.*" or "1.2.x".
-// Note that "x.x" is a valid xRange identifer, meaning "any version"
+// Note that "x.x" is a valid xRange identifier, meaning "any version"
 // Only the first item is strictly required.
 createToken('XRANGEIDENTIFIERLOOSE', `${src[t.NUMERICIDENTIFIERLOOSE]}|x|X|\\*`)
 createToken('XRANGEIDENTIFIER', `${src[t.NUMERICIDENTIFIER]}|x|X|\\*`)
@@ -27962,7 +28057,7 @@ const simpleSubset = (sub, dom, options) => {
         if (higher === c && higher !== gt) {
           return false
         }
-      } else if (gt.operator === '>=' && !satisfies(gt.semver, String(c), options)) {
+      } else if (gt.operator === '>=' && !c.test(gt.semver)) {
         return false
       }
     }
@@ -27980,7 +28075,7 @@ const simpleSubset = (sub, dom, options) => {
         if (lower === c && lower !== lt) {
           return false
         }
-      } else if (lt.operator === '<=' && !satisfies(lt.semver, String(c), options)) {
+      } else if (lt.operator === '<=' && !c.test(lt.semver)) {
         return false
       }
     }
@@ -35786,13 +35881,13 @@ const path_1 = __nccwpck_require__(16928);
 const tls_1 = __nccwpck_require__(64756);
 const util_1 = __nccwpck_require__(39023);
 const FtpContext_1 = __nccwpck_require__(36081);
+const netUtils_1 = __nccwpck_require__(76156);
+const parseControlResponse_1 = __nccwpck_require__(95931);
 const parseList_1 = __nccwpck_require__(91641);
+const parseListMLSD_1 = __nccwpck_require__(75287);
 const ProgressTracker_1 = __nccwpck_require__(35475);
 const StringWriter_1 = __nccwpck_require__(5494);
-const parseListMLSD_1 = __nccwpck_require__(75287);
-const netUtils_1 = __nccwpck_require__(76156);
 const transfer_1 = __nccwpck_require__(55115);
-const parseControlResponse_1 = __nccwpck_require__(95931);
 // Use promisify to keep the library compatible with Node 8.
 const fsReadDir = (0, util_1.promisify)(fs_1.readdir);
 const fsMkDir = (0, util_1.promisify)(fs_1.mkdir);
@@ -35801,7 +35896,8 @@ const fsOpen = (0, util_1.promisify)(fs_1.open);
 const fsClose = (0, util_1.promisify)(fs_1.close);
 const fsUnlink = (0, util_1.promisify)(fs_1.unlink);
 const defaultClientOptions = {
-    allowSeparateTransferHost: true
+    allowSeparateTransferHost: true,
+    maxListingBytes: 40 * 1024 * 1024
 };
 const LIST_COMMANDS_DEFAULT = () => ["LIST -a", "LIST"];
 const LIST_COMMANDS_MLSD = () => ["MLSD", "LIST -a", "LIST"];
@@ -35814,13 +35910,15 @@ class Client {
      *
      * @param timeout  Timeout in milliseconds, use 0 for no timeout. Optional, default is 30 seconds.
      */
-    constructor(timeout = 30000, options = defaultClientOptions) {
+    constructor(timeout = 30000, userOptions = defaultClientOptions) {
         this.availableListCommands = LIST_COMMANDS_DEFAULT();
+        const options = { ...defaultClientOptions, ...userOptions };
         this.ftp = new FtpContext_1.FTPContext(timeout);
         this.prepareTransfer = this._enterFirstCompatibleMode([
             transfer_1.enterPassiveModeIPv6,
             options.allowSeparateTransferHost ? transfer_1.enterPassiveModeIPv4 : transfer_1.enterPassiveModeIPv4_forceControlHostIP
         ]);
+        this.options = options;
         this.parseList = parseList_1.parseList;
         this._progressTracker = new ProgressTracker_1.ProgressTracker();
     }
@@ -36294,7 +36392,7 @@ class Client {
      * @protected
      */
     async _requestListWithCommand(command) {
-        const buffer = new StringWriter_1.StringWriter();
+        const buffer = new StringWriter_1.StringWriter(this.options.maxListingBytes);
         await (0, transfer_1.downloadTo)(buffer, {
             ftp: this.ftp,
             tracker: this._progressTracker,
@@ -36687,6 +36785,8 @@ exports.FTPError = FTPError;
 function doNothing() {
     /** Do nothing */
 }
+// Limit the accepted size of the control response.
+const maxControlResponseLength = 2 ** 16;
 /**
  * FTPContext holds the control and data sockets of an FTP connection and provides a
  * simplified way to interact with an FTP server, handle responses, errors and timeouts.
@@ -36845,6 +36945,10 @@ class FTPContext {
      * Send an FTP command without waiting for or handling the result.
      */
     send(command) {
+        // Reject control character injection attempts.
+        if (/[\r\n\0]/.test(command)) {
+            throw new Error(`Invalid command: Contains control characters. (${command})`);
+        }
         const containsPassword = command.startsWith("PASS");
         const message = containsPassword ? "> PASS ###" : `> ${command}`;
         this.log(message);
@@ -36941,7 +37045,11 @@ class FTPContext {
      */
     _onControlSocketData(chunk) {
         this.log(`< ${chunk}`);
-        // This chunk might complete an earlier partial response.
+        // This chunk might complete an earlier partial response. Protect against unbounded response attack.
+        if (this._partialResponse.length + chunk.length > maxControlResponseLength) {
+            this.closeWithError(new Error("FTP control response exceeded maximum allowed size"));
+            return;
+        }
         const completeResponse = this._partialResponse + chunk;
         const parsed = (0, parseControlResponse_1.parseControlResponse)(completeResponse);
         // Remember any incomplete remainder.
@@ -37136,21 +37244,27 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.StringWriter = void 0;
 const stream_1 = __nccwpck_require__(2203);
 class StringWriter extends stream_1.Writable {
-    constructor() {
-        super(...arguments);
-        this.buf = Buffer.alloc(0);
+    constructor(maxByteLength = 1 * 1024 * 1024) {
+        super();
+        this.maxByteLength = maxByteLength;
+        this.byteLength = 0;
+        this.bufs = [];
     }
     _write(chunk, _, callback) {
-        if (chunk instanceof Buffer) {
-            this.buf = Buffer.concat([this.buf, chunk]);
-            callback(null);
+        if (!(chunk instanceof Buffer)) {
+            callback(new Error("StringWriter: expects chunks of type 'Buffer'."));
+            return;
         }
-        else {
-            callback(new Error("StringWriter expects chunks of type 'Buffer'."));
+        if (this.byteLength + chunk.byteLength > this.maxByteLength) {
+            callback(new Error(`StringWriter: Maximum bytes exceeded, maxByteLength=${this.maxByteLength}.`));
+            return;
         }
+        this.byteLength += chunk.byteLength;
+        this.bufs.push(chunk);
+        callback(null);
     }
     getText(encoding) {
-        return this.buf.toString(encoding);
+        return Buffer.concat(this.bufs).toString(encoding);
     }
 }
 exports.StringWriter = StringWriter;
@@ -51189,27 +51303,89 @@ exports.AddressError = AddressError;
 /***/ }),
 
 /***/ 45864:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.isInSubnet = isInSubnet;
+exports.isHostInSubnet = isHostInSubnet;
+exports.isGloballyReachable = isGloballyReachable;
+exports.offsetBigInt = offsetBigInt;
 exports.isCorrect = isCorrect;
+exports.prefixLengthFromMask = prefixLengthFromMask;
+exports.assertByteArray = assertByteArray;
 exports.numberToPaddedHex = numberToPaddedHex;
 exports.stringToPaddedHex = stringToPaddedHex;
 exports.testBit = testBit;
+const address_error_1 = __nccwpck_require__(68850);
+/**
+ * Returns whether this address's *network* is contained within `address`,
+ * i.e. whether every address this one can represent also falls inside
+ * `address`. A network wider than `address` is not contained in it, so
+ * `10.0.0.0/8` is not in `10.0.0.0/16`.
+ *
+ * To ask whether the address itself falls inside a range, ignoring any CIDR
+ * suffix it was written with, use {@link isHostInSubnet} instead. That is the
+ * question the special-use classifiers ask.
+ */
 function isInSubnet(address) {
     if (this.subnetMask < address.subnetMask) {
         return false;
     }
-    if (this.mask(address.subnetMask) === address.mask()) {
-        return true;
+    return isHostInSubnet.call(this, address);
+}
+/**
+ * Returns whether this address's host bits fall inside `address`, ignoring
+ * this address's own subnet mask.
+ *
+ * This is the primitive the special-use classifiers (`isLoopback`,
+ * `isPrivate`, `isLinkLocal`, `getType`, …) are built on: they answer a
+ * question about the address, so the answer must not change with the CIDR
+ * suffix the caller happened to write. Use this rather than
+ * {@link isInSubnet} when classifying a single address — notably when the
+ * address came from untrusted input and the result backs a trust-boundary
+ * decision such as an SSRF allow/deny filter.
+ */
+function isHostInSubnet(address) {
+    return this.mask(address.subnetMask) === address.mask();
+}
+/**
+ * Returns whether the registry marks this address globally reachable: the
+ * answer of the most specific entry containing it that has one, or `true`
+ * when no entry contains it.
+ */
+function isGloballyReachable(entries) {
+    let best = null;
+    for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (entry.reachable !== null &&
+            isHostInSubnet.call(this, entry.subnet) &&
+            (best === null || entry.subnet.subnetMask > best.subnet.subnetMask)) {
+            best = entry;
+        }
     }
-    return false;
+    return best === null ? true : best.reachable;
+}
+/**
+ * Adds `n` to `value` and returns the result, throwing `AddressError` unless
+ * `n` is an integer and the result stays within `[0, 2**bits - 1]`.
+ */
+function offsetBigInt(value, n, bits, family) {
+    if (typeof n === 'number' && !Number.isSafeInteger(n)) {
+        throw new address_error_1.AddressError(`${family} offset must be an integer`);
+    }
+    if (typeof n !== 'number' && typeof n !== 'bigint') {
+        throw new address_error_1.AddressError(`${family} offset must be an integer`);
+    }
+    const result = value + BigInt(n);
+    if (result < BigInt(0) || result > (BigInt(1) << BigInt(bits)) - BigInt(1)) {
+        throw new address_error_1.AddressError(`${family} offset leaves the address space`);
+    }
+    return result;
 }
 function isCorrect(defaultBits) {
-    return function () {
+    return function isCorrectForm() {
         if (this.addressMinusSuffix !== this.correctForm()) {
             return false;
         }
@@ -51218,6 +51394,40 @@ function isCorrect(defaultBits) {
         }
         return this.parsedSubnet === String(this.subnetMask);
     };
+}
+/**
+ * Returns the prefix length (number of leading 1 bits) of a contiguous
+ * subnet mask. Throws `AddressError` if the mask is non-contiguous (e.g.
+ * `255.0.255.0`).
+ */
+function prefixLengthFromMask(value, totalBits) {
+    const binary = value.toString(2).padStart(totalBits, '0');
+    if (binary.length > totalBits) {
+        throw new address_error_1.AddressError('Invalid subnet mask.');
+    }
+    const firstZero = binary.indexOf('0');
+    if (firstZero === -1) {
+        return totalBits;
+    }
+    if (binary.slice(firstZero).includes('1')) {
+        throw new address_error_1.AddressError('Invalid subnet mask.');
+    }
+    return firstZero;
+}
+/**
+ * Throws `AddressError` unless `bytes` holds exactly `byteCount` integers,
+ * each from `minimum` to 255. Pass a `minimum` of `-128` where signed bytes
+ * are accepted and folded to unsigned, and `0` where they are not.
+ */
+function assertByteArray(bytes, byteCount, family, minimum) {
+    if (bytes.length !== byteCount) {
+        throw new address_error_1.AddressError(`${family} addresses require exactly ${byteCount} bytes`);
+    }
+    for (let i = 0; i < bytes.length; i++) {
+        if (!Number.isInteger(bytes[i]) || bytes[i] < minimum || bytes[i] > 255) {
+            throw new address_error_1.AddressError(`All bytes must be integers between ${minimum} and 255`);
+        }
+    }
 }
 function numberToPaddedHex(number) {
     return number.toString(16).padStart(2, '0');
@@ -51317,13 +51527,14 @@ exports.Address4 = void 0;
 const common = __importStar(__nccwpck_require__(45864));
 const constants = __importStar(__nccwpck_require__(66437));
 const address_error_1 = __nccwpck_require__(68850);
+const isCorrect4 = common.isCorrect(constants.BITS);
 /**
  * Represents an IPv4 address
- * @class Address4
  * @param {string} address - An IPv4 address string
  */
 class Address4 {
     constructor(address) {
+        this.addressMinusSuffix = '';
         this.groups = constants.GROUPS;
         this.parsedAddress = [];
         this.parsedSubnet = '';
@@ -51332,18 +51543,23 @@ class Address4 {
         this.v4 = true;
         /**
          * Returns true if the address is correct, false otherwise
-         * @memberof Address4
-         * @instance
          * @returns {Boolean}
          */
-        this.isCorrect = common.isCorrect(constants.BITS);
+        this.isCorrect = isCorrect4;
         /**
          * Returns true if the given address is in the subnet of the current address
-         * @memberof Address4
-         * @instance
          * @returns {boolean}
          */
         this.isInSubnet = common.isInSubnet;
+        /**
+         * Returns true if this address's host bits fall inside the given subnet,
+         * ignoring this address's own subnet mask. Prefer this over `isInSubnet`
+         * when classifying a single address, so the answer doesn't change with the
+         * CIDR suffix the caller happened to write — notably when the address came
+         * from untrusted input and the result backs a trust-boundary decision.
+         * @returns {boolean}
+         */
+        this.isHostInSubnet = common.isHostInSubnet;
         this.address = address;
         const subnet = constants.RE_SUBNET_STRING.exec(address);
         if (subnet) {
@@ -51358,66 +51574,145 @@ class Address4 {
         this.addressMinusSuffix = address;
         this.parsedAddress = this.parse(address);
     }
+    /**
+     * Returns true if the given string is a valid IPv4 address (with optional
+     * CIDR subnet), false otherwise. Host bits in the subnet portion are
+     * allowed (e.g. `192.168.1.5/24` is valid); for strict network-address
+     * validation compare `correctForm()` to `startAddress().correctForm()`,
+     * or use `networkForm()`.
+     */
     static isValid(address) {
         try {
             // eslint-disable-next-line no-new
             new Address4(address);
             return true;
         }
-        catch (e) {
+        catch {
             return false;
         }
     }
-    /*
-     * Parses a v4 address
+    /**
+     * Parses an IPv4 address string into its four octet groups and stores the
+     * result on `this.parsedAddress`. Called automatically by the constructor;
+     * you typically don't need to call it directly. Throws `AddressError` if
+     * the input is not a valid IPv4 address.
      */
     parse(address) {
         const groups = address.split('.');
+        // Checked before the general match so the error names the actual problem.
+        // Address6 rejects the same notation on its v4-in-v6 path.
+        if (groups.some((group) => /^0\d/.test(group))) {
+            throw new address_error_1.AddressError("IPv4 addresses can't have leading zeroes.");
+        }
         if (!address.match(constants.RE_ADDRESS)) {
             throw new address_error_1.AddressError('Invalid IPv4 address.');
         }
         return groups;
     }
     /**
-     * Returns the correct form of an address
-     * @memberof Address4
-     * @instance
-     * @returns {String}
+     * Returns the address in correct form: octets joined with `.` and any
+     * leading zeros stripped (e.g. `192.168.1.1`). For IPv4 this matches the
+     * canonical dotted-decimal representation.
      */
     correctForm() {
         return this.parsedAddress.map((part) => parseInt(part, 10)).join('.');
     }
     /**
-     * Converts a hex string to an IPv4 address object
-     * @memberof Address4
-     * @static
+     * Construct an `Address4` from an address and a dotted-decimal subnet
+     * mask given as separate strings (e.g. as returned by Node's
+     * `os.networkInterfaces()`). Throws `AddressError` if the mask is
+     * non-contiguous (e.g. `255.0.255.0`).
+     * @example
+     * var address = Address4.fromAddressAndMask('192.168.1.1', '255.255.255.0');
+     * address.subnetMask; // 24
+     */
+    static fromAddressAndMask(address, mask) {
+        const bits = common.prefixLengthFromMask(new Address4(mask).bigInt(), constants.BITS);
+        return new Address4(`${address}/${bits}`);
+    }
+    /**
+     * Construct an `Address4` from an address and a Cisco-style wildcard mask
+     * given as separate strings (e.g. `0.0.0.255` for a `/24`). The wildcard
+     * mask is the bitwise inverse of the subnet mask. Throws `AddressError`
+     * if the mask is non-contiguous (e.g. `0.255.0.255`).
+     * @example
+     * var address = Address4.fromAddressAndWildcardMask('10.0.0.1', '0.0.0.255');
+     * address.subnetMask; // 24
+     */
+    static fromAddressAndWildcardMask(address, wildcardMask) {
+        const wildcard = new Address4(wildcardMask).bigInt();
+        const allOnes = (BigInt(1) << BigInt(constants.BITS)) - BigInt(1);
+        const mask = wildcard ^ allOnes;
+        const bits = common.prefixLengthFromMask(mask, constants.BITS);
+        return new Address4(`${address}/${bits}`);
+    }
+    /**
+     * Construct an `Address4` from a wildcard pattern with trailing `*`
+     * octets. The number of trailing wildcards determines the prefix
+     * length: each `*` represents 8 bits.
+     *
+     * Only trailing whole-octet wildcards are supported. Partial-octet
+     * wildcards (e.g. `192.168.0.1*`) and interior wildcards (e.g.
+     * `192.*.0.1`) throw `AddressError`.
+     * @example
+     * Address4.fromWildcard('192.168.0.*').subnet;   // '/24'
+     * Address4.fromWildcard('192.168.*.*').subnet;   // '/16'
+     * Address4.fromWildcard('*.*.*.*').subnet;       // '/0'
+     */
+    static fromWildcard(input) {
+        const groups = input.split('.');
+        if (groups.length !== constants.GROUPS) {
+            throw new address_error_1.AddressError('Wildcard pattern must have 4 octets');
+        }
+        let firstWildcard = -1;
+        for (let i = 0; i < groups.length; i++) {
+            if (groups[i] === '*') {
+                if (firstWildcard === -1) {
+                    firstWildcard = i;
+                }
+            }
+            else if (firstWildcard !== -1) {
+                throw new address_error_1.AddressError('Wildcard `*` must only appear in trailing octets (e.g. `192.168.0.*`)');
+            }
+        }
+        const trailing = firstWildcard === -1 ? 0 : groups.length - firstWildcard;
+        const replaced = groups.map((g) => (g === '*' ? '0' : g));
+        const subnetBits = constants.BITS - trailing * 8;
+        return new Address4(`${replaced.join('.')}/${subnetBits}`);
+    }
+    /**
+     * Converts a hex string to an IPv4 address object. Accepts 8 hex digits
+     * with optional `:` separators (e.g. `'7f000001'` or `'7f:00:00:01'`).
+     * Throws `AddressError` for any other length or for non-hex characters.
      * @param {string} hex - a hex string to convert
      * @returns {Address4}
      */
     static fromHex(hex) {
-        const padded = hex.replace(/:/g, '').padStart(8, '0');
+        const stripped = hex.replace(/:/g, '');
+        if (!/^[0-9a-fA-F]{8}$/.test(stripped)) {
+            throw new address_error_1.AddressError('IPv4 hex must be exactly 8 hex digits');
+        }
         const groups = [];
-        let i;
-        for (i = 0; i < 8; i += 2) {
-            const h = padded.slice(i, i + 2);
-            groups.push(parseInt(h, 16));
+        for (let i = 0; i < 8; i += 2) {
+            groups.push(parseInt(stripped.slice(i, i + 2), 16));
         }
         return new Address4(groups.join('.'));
     }
     /**
-     * Converts an integer into a IPv4 address object
-     * @memberof Address4
-     * @static
+     * Converts an integer into a IPv4 address object. The integer must be a
+     * non-negative safe integer in the range `[0, 2**32 - 1]`; otherwise
+     * `AddressError` is thrown.
      * @param {integer} integer - a number to convert
      * @returns {Address4}
      */
     static fromInteger(integer) {
-        return Address4.fromHex(integer.toString(16));
+        if (!Number.isInteger(integer) || integer < 0 || integer > 0xffffffff) {
+            throw new address_error_1.AddressError('IPv4 integer must be in the range 0 to 2**32 - 1');
+        }
+        return Address4.fromHex(integer.toString(16).padStart(8, '0'));
     }
     /**
      * Return an address from in-addr.arpa form
-     * @memberof Address4
-     * @static
      * @param {string} arpaFormAddress - an 'in-addr.arpa' form ipv4 address
      * @returns {Adress4}
      * @example
@@ -51432,17 +51727,15 @@ class Address4 {
     }
     /**
      * Converts an IPv4 address object to a hex string
-     * @memberof Address4
-     * @instance
      * @returns {String}
      */
     toHex() {
         return this.parsedAddress.map((part) => common.stringToPaddedHex(part)).join(':');
     }
     /**
-     * Converts an IPv4 address object to an array of bytes
-     * @memberof Address4
-     * @instance
+     * Converts an IPv4 address object to an array of bytes.
+     *
+     * To get a Node.js `Buffer`, wrap the result: `Buffer.from(address.toArray())`.
      * @returns {Array}
      */
     toArray() {
@@ -51450,8 +51743,6 @@ class Address4 {
     }
     /**
      * Converts an IPv4 address object to an IPv6 address group
-     * @memberof Address4
-     * @instance
      * @returns {String}
      */
     toGroup6() {
@@ -51464,8 +51755,6 @@ class Address4 {
     }
     /**
      * Returns the address as a `bigint`
-     * @memberof Address4
-     * @instance
      * @returns {bigint}
      */
     bigInt() {
@@ -51473,8 +51762,6 @@ class Address4 {
     }
     /**
      * Helper function getting start address.
-     * @memberof Address4
-     * @instance
      * @returns {bigint}
      */
     _startAddress() {
@@ -51483,8 +51770,6 @@ class Address4 {
     /**
      * The first address in the range given by this address' subnet.
      * Often referred to as the Network Address.
-     * @memberof Address4
-     * @instance
      * @returns {Address4}
      */
     startAddress() {
@@ -51493,8 +51778,6 @@ class Address4 {
     /**
      * The first host address in the range given by this address's subnet ie
      * the first address after the Network Address
-     * @memberof Address4
-     * @instance
      * @returns {Address4}
      */
     startAddressExclusive() {
@@ -51502,9 +51785,34 @@ class Address4 {
         return Address4.fromBigInt(this._startAddress() + adjust);
     }
     /**
+     * Returns the address `n` addresses after this one (or before, when `n` is
+     * negative), keeping this address's subnet mask. Throws `AddressError` when
+     * the result would fall outside the IPv4 address space or `n` is not an
+     * integer.
+     * @param {number | bigint} n
+     * @returns {Address4}
+     * @example
+     * new Address4('10.0.0.0/24').offset(1).correctForm(); // '10.0.0.1'
+     */
+    offset(n) {
+        return Address4.fromBigInt(common.offsetBigInt(this.bigInt(), n, constants.BITS, 'IPv4')).withSubnetMask(this.subnetMask);
+    }
+    /**
+     * Returns the network that follows this address's network: the address after
+     * {@link endAddress}, with the same subnet mask. Throws `AddressError` when
+     * this network is the last one in the address space.
+     * @returns {Address4}
+     * @example
+     * new Address4('10.0.0.0/24').nextNetwork().networkForm(); // '10.0.1.0/24'
+     */
+    nextNetwork() {
+        return Address4.fromBigInt(common.offsetBigInt(this._endAddress(), 1, constants.BITS, 'IPv4')).withSubnetMask(this.subnetMask);
+    }
+    withSubnetMask(subnetMask) {
+        return new Address4(`${this.correctForm()}/${subnetMask}`);
+    }
+    /**
      * Helper function getting end address.
-     * @memberof Address4
-     * @instance
      * @returns {bigint}
      */
     _endAddress() {
@@ -51513,8 +51821,6 @@ class Address4 {
     /**
      * The last address in the range given by this address' subnet
      * Often referred to as the Broadcast
-     * @memberof Address4
-     * @instance
      * @returns {Address4}
      */
     endAddress() {
@@ -51523,8 +51829,6 @@ class Address4 {
     /**
      * The last host address in the range given by this address's subnet ie
      * the last address prior to the Broadcast Address
-     * @memberof Address4
-     * @instance
      * @returns {Address4}
      */
     endAddressExclusive() {
@@ -51532,38 +51836,64 @@ class Address4 {
         return Address4.fromBigInt(this._endAddress() - adjust);
     }
     /**
-     * Converts a BigInt to a v4 address object
-     * @memberof Address4
-     * @static
+     * The dotted-decimal form of the subnet mask, e.g. `255.255.240.0` for
+     * a `/20`. Returns an `Address4`; call `.correctForm()` for the string.
+     * @returns {Address4}
+     */
+    subnetMaskAddress() {
+        return Address4.fromBigInt(BigInt(`0b${'1'.repeat(this.subnetMask)}${'0'.repeat(constants.BITS - this.subnetMask)}`));
+    }
+    /**
+     * The Cisco-style wildcard mask, e.g. `0.0.0.255` for a `/24`. This is
+     * the bitwise inverse of `subnetMaskAddress()`. Returns an `Address4`;
+     * call `.correctForm()` for the string.
+     * @returns {Address4}
+     */
+    wildcardMask() {
+        return Address4.fromBigInt(BigInt(`0b${'0'.repeat(this.subnetMask)}${'1'.repeat(constants.BITS - this.subnetMask)}`));
+    }
+    /**
+     * The network address in CIDR string form, e.g. `192.168.1.0/24` for
+     * `192.168.1.5/24`. For an address with no explicit subnet the prefix is
+     * `/32`, e.g. `networkForm()` on `192.168.1.5` returns `192.168.1.5/32`.
+     * @returns {string}
+     */
+    networkForm() {
+        return `${this.startAddress().correctForm()}/${this.subnetMask}`;
+    }
+    /**
+     * Converts a BigInt to a v4 address object. The value must be in the
+     * range `[0, 2**32 - 1]`; otherwise `AddressError` is thrown.
      * @param {bigint} bigInt - a BigInt to convert
      * @returns {Address4}
      */
     static fromBigInt(bigInt) {
-        return Address4.fromHex(bigInt.toString(16));
+        if (bigInt < BigInt(0) || bigInt > BigInt(0xffffffff)) {
+            throw new address_error_1.AddressError('IPv4 BigInt must be in the range 0 to 2**32 - 1');
+        }
+        return Address4.fromHex(bigInt.toString(16).padStart(8, '0'));
     }
     /**
-     * Convert a byte array to an Address4 object
-     * @memberof Address4
-     * @static
+     * Convert a byte array to an Address4 object. Throws `AddressError` unless
+     * given exactly 4 integers from 0 to 255. Signed bytes are rejected, so
+     * this differs from `Address6.fromByteArray`, which folds them; the two
+     * contracts converge on this stricter form in the next major version.
+     *
+     * To convert from a Node.js `Buffer`, spread it: `Address4.fromByteArray([...buf])`.
      * @param {Array<number>} bytes - an array of 4 bytes (0-255)
      * @returns {Address4}
      */
     static fromByteArray(bytes) {
-        if (bytes.length !== 4) {
-            throw new address_error_1.AddressError('IPv4 addresses require exactly 4 bytes');
-        }
-        // Validate that all bytes are within valid range (0-255)
-        for (let i = 0; i < bytes.length; i++) {
-            if (!Number.isInteger(bytes[i]) || bytes[i] < 0 || bytes[i] > 255) {
-                throw new address_error_1.AddressError('All bytes must be integers between 0 and 255');
-            }
-        }
+        common.assertByteArray(bytes, 4, 'IPv4', 0);
         return this.fromUnsignedByteArray(bytes);
     }
     /**
-     * Convert an unsigned byte array to an Address4 object
-     * @memberof Address4
-     * @static
+     * Convert an unsigned byte array to an Address4 object. Throws
+     * `AddressError` unless given exactly 4 bytes, and rejects values outside
+     * 0 to 255 when parsing the resulting address.
+     *
+     * To convert from a Node.js `Buffer`, spread it:
+     * `Address4.fromUnsignedByteArray([...buf])`.
      * @param {Array<number>} bytes - an array of 4 unsigned bytes (0-255)
      * @returns {Address4}
      */
@@ -51577,8 +51907,6 @@ class Address4 {
     /**
      * Returns the first n bits of the address, defaulting to the
      * subnet mask
-     * @memberof Address4
-     * @instance
      * @returns {String}
      */
     mask(mask) {
@@ -51589,19 +51917,16 @@ class Address4 {
     }
     /**
      * Returns the bits in the given range as a base-2 string
-     * @memberof Address4
-     * @instance
      * @returns {string}
      */
     getBitsBase2(start, end) {
         return this.binaryZeroPad().slice(start, end);
     }
     /**
-     * Return the reversed ip6.arpa form of the address
-     * @memberof Address4
+     * Return the reversed in-addr.arpa form of the address, e.g.
+     * `42.2.0.192.in-addr.arpa.` for `192.0.2.42`.
      * @param {Object} options
      * @param {boolean} options.omitSuffix - omit the "in-addr.arpa" suffix
-     * @instance
      * @returns {String}
      */
     reverseForm(options) {
@@ -51616,29 +51941,112 @@ class Address4 {
     }
     /**
      * Returns true if the given address is a multicast address
-     * @memberof Address4
-     * @instance
      * @returns {boolean}
      */
     isMulticast() {
-        return this.isInSubnet(new Address4('224.0.0.0/4'));
+        return this.isHostInSubnet(MULTICAST_V4);
+    }
+    /**
+     * Returns true if the address is in one of the [RFC 1918](https://datatracker.ietf.org/doc/html/rfc1918) private address ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+     * @returns {boolean}
+     */
+    isPrivate() {
+        return PRIVATE_V4.some((subnet) => this.isHostInSubnet(subnet));
+    }
+    /**
+     * Returns true if the address is in the loopback range `127.0.0.0/8` ([RFC 1122](https://datatracker.ietf.org/doc/html/rfc1122)).
+     * @returns {boolean}
+     */
+    isLoopback() {
+        return this.isHostInSubnet(LOOPBACK_V4);
+    }
+    /**
+     * Returns true if the address is in the link-local range `169.254.0.0/16` ([RFC 3927](https://datatracker.ietf.org/doc/html/rfc3927)).
+     * @returns {boolean}
+     */
+    isLinkLocal() {
+        return this.isHostInSubnet(LINK_LOCAL_V4);
+    }
+    /**
+     * Returns true if the address is the unspecified address `0.0.0.0`.
+     * @returns {boolean}
+     */
+    isUnspecified() {
+        return this.isHostInSubnet(UNSPECIFIED_V4);
+    }
+    /**
+     * Returns true if the address is the limited broadcast address `255.255.255.255` ([RFC 919](https://datatracker.ietf.org/doc/html/rfc919)).
+     * @returns {boolean}
+     */
+    isBroadcast() {
+        return this.isHostInSubnet(BROADCAST_V4);
+    }
+    /**
+     * Returns true if the address is in the carrier-grade NAT range `100.64.0.0/10` ([RFC 6598](https://datatracker.ietf.org/doc/html/rfc6598)).
+     * @returns {boolean}
+     */
+    isCGNAT() {
+        return this.isHostInSubnet(CGNAT_V4);
+    }
+    /**
+     * Returns true if the address is in one of the documentation ranges
+     * `192.0.2.0/24`, `198.51.100.0/24`, or `203.0.113.0/24` ([RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737)).
+     * @returns {boolean}
+     */
+    isDocumentation() {
+        return DOCUMENTATION_V4.some((subnet) => this.isHostInSubnet(subnet));
+    }
+    /**
+     * Returns true if the address is in the benchmarking range `198.18.0.0/15` ([RFC 2544](https://datatracker.ietf.org/doc/html/rfc2544)).
+     * @returns {boolean}
+     */
+    isBenchmarking() {
+        return this.isHostInSubnet(BENCHMARKING_V4);
+    }
+    /**
+     * Returns true if the address is in the reserved range `240.0.0.0/4` ([RFC 1112](https://datatracker.ietf.org/doc/html/rfc1112)),
+     * which includes the limited broadcast address.
+     * @returns {boolean}
+     */
+    isReserved() {
+        return this.isHostInSubnet(RESERVED_V4);
+    }
+    /**
+     * Returns true if the address is globally reachable: not multicast, and not
+     * in any block the [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-registry/)
+     * marks as not globally reachable. That covers everything the individual
+     * classifiers name (private, loopback, link-local, CGNAT, unspecified,
+     * broadcast, documentation, benchmarking, reserved) and the blocks they do
+     * not, such as `0.0.0.0/8` and the IETF protocol assignments in
+     * `192.0.0.0/24`. This is the single predicate to use where a request must
+     * not reach an internal or special-purpose destination; see SECURITY.md.
+     * @returns {boolean}
+     */
+    isGlobal() {
+        return !this.isMulticast() && common.isGloballyReachable.call(this, SPECIAL_PURPOSE_V4);
     }
     /**
      * Returns a zero-padded base-2 string representation of the address
-     * @memberof Address4
-     * @instance
      * @returns {string}
      */
     binaryZeroPad() {
-        return this.bigInt().toString(2).padStart(constants.BITS, '0');
+        if (this._binaryZeroPad === undefined) {
+            this._binaryZeroPad = this.bigInt().toString(2).padStart(constants.BITS, '0');
+        }
+        return this._binaryZeroPad;
     }
     /**
-     * Groups an IPv4 address for inclusion at the end of an IPv6 address
+     * Groups an IPv4 address for inclusion at the end of an IPv6 address.
+     *
+     * Returns an HTML fragment: each half of the address is wrapped in a
+     * `<span>` carrying the group classes an address-inspector UI hovers on.
+     * The address content is HTML-escaped; anything you concatenate around it
+     * is your responsibility.
      * @returns {String}
      */
     groupForV6() {
         const segments = this.parsedAddress;
-        return this.address.replace(constants.RE_ADDRESS, `<span class="hover-group group-v4 group-6">${segments
+        return this.correctForm().replace(constants.RE_ADDRESS, `<span class="hover-group group-v4 group-6">${segments
             .slice(0, 2)
             .join('.')}</span>.<span class="hover-group group-v4 group-7">${segments
             .slice(2, 4)
@@ -51646,6 +52054,28 @@ class Address4 {
     }
 }
 exports.Address4 = Address4;
+const MULTICAST_V4 = new Address4('224.0.0.0/4');
+const PRIVATE_V4 = [
+    new Address4('10.0.0.0/8'),
+    new Address4('172.16.0.0/12'),
+    new Address4('192.168.0.0/16'),
+];
+const LOOPBACK_V4 = new Address4('127.0.0.0/8');
+const LINK_LOCAL_V4 = new Address4('169.254.0.0/16');
+const UNSPECIFIED_V4 = new Address4('0.0.0.0/32');
+const BROADCAST_V4 = new Address4('255.255.255.255/32');
+const CGNAT_V4 = new Address4('100.64.0.0/10');
+const DOCUMENTATION_V4 = [
+    new Address4('192.0.2.0/24'),
+    new Address4('198.51.100.0/24'),
+    new Address4('203.0.113.0/24'),
+];
+const BENCHMARKING_V4 = new Address4('198.18.0.0/15');
+const RESERVED_V4 = new Address4('240.0.0.0/4');
+const SPECIAL_PURPOSE_V4 = constants.SPECIAL_PURPOSE.map(([cidr, , reachable]) => ({
+    subnet: new Address4(cidr),
+    reachable,
+}));
 //# sourceMappingURL=ipv4.js.map
 
 /***/ }),
@@ -51690,6 +52120,7 @@ const ipv4_1 = __nccwpck_require__(17946);
 const regular_expressions_1 = __nccwpck_require__(72016);
 const address_error_1 = __nccwpck_require__(68850);
 const common_1 = __nccwpck_require__(45864);
+const isCorrect6 = common.isCorrect(constants6.BITS);
 function assert(condition) {
     if (!condition) {
         throw new Error('Assertion failed.');
@@ -51728,12 +52159,10 @@ function paddedHex(octet) {
     return parseInt(octet, 16).toString(16).padStart(4, '0');
 }
 function unsignByte(b) {
-    // eslint-disable-next-line no-bitwise
     return b & 0xff;
 }
 /**
  * Represents an IPv6 address
- * @class Address6
  * @param {string} address - An IPv6 address string
  * @param {number} [groups=8] - How many octets to parse
  * @example
@@ -51750,18 +52179,23 @@ class Address6 {
         // #region Attributes
         /**
          * Returns true if the given address is in the subnet of the current address
-         * @memberof Address6
-         * @instance
          * @returns {boolean}
          */
         this.isInSubnet = common.isInSubnet;
         /**
-         * Returns true if the address is correct, false otherwise
-         * @memberof Address6
-         * @instance
+         * Returns true if this address's host bits fall inside the given subnet,
+         * ignoring this address's own subnet mask. Prefer this over `isInSubnet`
+         * when classifying a single address, so the answer doesn't change with the
+         * CIDR suffix the caller happened to write — notably when the address came
+         * from untrusted input and the result backs a trust-boundary decision.
          * @returns {boolean}
          */
-        this.isCorrect = common.isCorrect(constants6.BITS);
+        this.isHostInSubnet = common.isHostInSubnet;
+        /**
+         * Returns true if the address is correct, false otherwise
+         * @returns {boolean}
+         */
+        this.isCorrect = isCorrect6;
         if (optionalGroups === undefined) {
             this.groups = constants6.GROUPS;
         }
@@ -51781,7 +52215,10 @@ class Address6 {
             }
             address = address.replace(constants6.RE_SUBNET_STRING, '');
         }
-        else if (/\//.test(address)) {
+        // RE_SUBNET_STRING anchors on the end of the address, so it strips only
+        // the trailing suffix. A second one left behind (`::/0/1`) is malformed
+        // and must be rejected rather than parsed as an address group.
+        if (/\//.test(address)) {
             throw new address_error_1.AddressError('Invalid subnet mask.');
         }
         const zone = constants6.RE_ZONE_STRING.exec(address);
@@ -51792,20 +52229,26 @@ class Address6 {
         this.addressMinusSuffix = address;
         this.parsedAddress = this.parse(this.addressMinusSuffix);
     }
+    /**
+     * Returns true if the given string is a valid IPv6 address (with optional
+     * CIDR subnet and zone identifier), false otherwise. Host bits in the
+     * subnet portion are allowed (e.g. `2001:db8::1/32` is valid); for strict
+     * network-address validation compare `correctForm()` to
+     * `startAddress().correctForm()`, or use `networkForm()`.
+     */
     static isValid(address) {
         try {
             // eslint-disable-next-line no-new
             new Address6(address);
             return true;
         }
-        catch (e) {
+        catch {
             return false;
         }
     }
     /**
-     * Convert a BigInt to a v6 address object
-     * @memberof Address6
-     * @static
+     * Convert a BigInt to a v6 address object. The value must be in the
+     * range `[0, 2**128 - 1]`; otherwise `AddressError` is thrown.
      * @param {bigint} bigInt - a BigInt to convert
      * @returns {Address6}
      * @example
@@ -51814,65 +52257,57 @@ class Address6 {
      * address.correctForm(); // '::e8:d4a5:1000'
      */
     static fromBigInt(bigInt) {
+        if (bigInt < BigInt(0) || bigInt > (BigInt(1) << BigInt(constants6.BITS)) - BigInt(1)) {
+            throw new address_error_1.AddressError('IPv6 BigInt must be in the range 0 to 2**128 - 1');
+        }
         const hex = bigInt.toString(16).padStart(32, '0');
         const groups = [];
-        let i;
-        for (i = 0; i < constants6.GROUPS; i++) {
+        for (let i = 0; i < constants6.GROUPS; i++) {
             groups.push(hex.slice(i * 4, (i + 1) * 4));
         }
         return new Address6(groups.join(':'));
     }
     /**
-     * Convert a URL (with optional port number) to an address object
-     * @memberof Address6
-     * @static
-     * @param {string} url - a URL with optional port number
+     * Parse a URL (with optional bracketed host and port) into an address and
+     * port. Returns either `{ address, port }` on success or
+     * `{ error, address: null, port: null }` if the URL could not be parsed.
+     * Ports are returned as numbers (or `null` if absent or out of range).
      * @example
      * var addressAndPort = Address6.fromURL('http://[ffff::]:8080/foo/');
      * addressAndPort.address.correctForm(); // 'ffff::'
      * addressAndPort.port; // 8080
      */
     static fromURL(url) {
+        var _a;
         let host;
         let port = null;
         let result;
+        let error;
+        // Remove the protocol prefix, if any
+        const stripped = url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
         // If we have brackets parse them and find a port
-        if (url.indexOf('[') !== -1 && url.indexOf(']:') !== -1) {
-            result = constants6.RE_URL_WITH_PORT.exec(url);
+        if (stripped.indexOf('[') !== -1 && stripped.indexOf(']:') !== -1) {
+            error = 'failed to parse address with port';
+            result = constants6.RE_URL_WITH_PORT.exec(stripped);
             if (result === null) {
-                return {
-                    error: 'failed to parse address with port',
-                    address: null,
-                    port: null,
-                };
+                return { error, address: null, port: null };
             }
             host = result[1];
             port = result[2];
-            // If there's a URL extract the address
-        }
-        else if (url.indexOf('/') !== -1) {
-            // Remove the protocol prefix
-            url = url.replace(/^[a-z0-9]+:\/\//, '');
-            // Parse the address
-            result = constants6.RE_URL.exec(url);
-            if (result === null) {
-                return {
-                    error: 'failed to parse address from URL',
-                    address: null,
-                    port: null,
-                };
-            }
-            host = result[1];
-            // Otherwise just assign the URL to the host and let the library parse it
         }
         else {
-            host = url;
+            error = 'failed to parse address from URL';
+            result = constants6.RE_URL.exec(stripped);
+            if (result === null) {
+                return { error, address: null, port: null };
+            }
+            host = (_a = result[1]) !== null && _a !== void 0 ? _a : result[2];
         }
         // If there's a port convert it to an integer
         if (port) {
             port = parseInt(port, 10);
-            // squelch out of range ports
-            if (port < 0 || port > 65536) {
+            // squelch out of range ports (valid ports are 0-65535)
+            if (port < 0 || port > 65535) {
                 port = null;
             }
         }
@@ -51880,15 +52315,103 @@ class Address6 {
             // Standardize `undefined` to `null`
             port = null;
         }
-        return {
-            address: new Address6(host),
-            port,
-        };
+        // The URL character class is a superset of valid IPv6, so a host the
+        // regex accepted (an IPv4 literal, bare punctuation, too many groups)
+        // can still be rejected by the parser
+        let address;
+        try {
+            address = new Address6(host);
+        }
+        catch {
+            return { error, address: null, port: null };
+        }
+        return { address, port };
+    }
+    /**
+     * Construct an `Address6` from an address and a hex subnet mask given as
+     * separate strings (e.g. as returned by Node's `os.networkInterfaces()`).
+     * Throws `AddressError` if the mask is non-contiguous (e.g.
+     * `ffff::ffff`).
+     * @example
+     * var address = Address6.fromAddressAndMask('fe80::1', 'ffff:ffff:ffff:ffff::');
+     * address.subnetMask; // 64
+     */
+    static fromAddressAndMask(address, mask) {
+        const bits = common.prefixLengthFromMask(new Address6(mask).bigInt(), constants6.BITS);
+        return new Address6(`${address}/${bits}`);
+    }
+    /**
+     * Construct an `Address6` from an address and a Cisco-style wildcard mask
+     * given as separate strings (e.g. `::ffff:ffff:ffff:ffff` for a `/64`).
+     * The wildcard mask is the bitwise inverse of the subnet mask. Throws
+     * `AddressError` if the mask is non-contiguous.
+     * @example
+     * var address = Address6.fromAddressAndWildcardMask('fe80::1', '::ffff:ffff:ffff:ffff');
+     * address.subnetMask; // 64
+     */
+    static fromAddressAndWildcardMask(address, wildcardMask) {
+        const wildcard = new Address6(wildcardMask).bigInt();
+        const allOnes = (BigInt(1) << BigInt(constants6.BITS)) - BigInt(1);
+        const mask = wildcard ^ allOnes;
+        const bits = common.prefixLengthFromMask(mask, constants6.BITS);
+        return new Address6(`${address}/${bits}`);
+    }
+    /**
+     * Construct an `Address6` from a wildcard pattern with trailing `*`
+     * groups. The number of trailing wildcards determines the prefix
+     * length: each `*` represents 16 bits. `::` is expanded to zero groups
+     * (not wildcards) before evaluating trailing wildcards.
+     *
+     * Only trailing whole-group wildcards are supported. Partial-group
+     * wildcards (e.g. `2001:db8::0*`) and interior wildcards (e.g.
+     * `*::1`) throw `AddressError`.
+     * @example
+     * Address6.fromWildcard('2001:db8:*:*:*:*:*:*').subnet;  // '/32'
+     * Address6.fromWildcard('2001:db8::*').subnet;           // '/112'
+     * Address6.fromWildcard('*:*:*:*:*:*:*:*').subnet;       // '/0'
+     */
+    static fromWildcard(input) {
+        if (input.includes('%') || input.includes('/')) {
+            throw new address_error_1.AddressError('Wildcard pattern must not include a zone or CIDR suffix');
+        }
+        const halves = input.split('::');
+        if (halves.length > 2) {
+            throw new address_error_1.AddressError("Wildcard pattern cannot contain more than one '::'");
+        }
+        let groups;
+        if (halves.length === 2) {
+            const left = halves[0] === '' ? [] : halves[0].split(':');
+            const right = halves[1] === '' ? [] : halves[1].split(':');
+            const remaining = constants6.GROUPS - left.length - right.length;
+            if (remaining < 1) {
+                throw new address_error_1.AddressError("Wildcard pattern with '::' has too many groups");
+            }
+            groups = [...left, ...new Array(remaining).fill('0'), ...right];
+        }
+        else {
+            groups = input.split(':');
+        }
+        if (groups.length !== constants6.GROUPS) {
+            throw new address_error_1.AddressError('Wildcard pattern must have 8 groups');
+        }
+        let firstWildcard = -1;
+        for (let i = 0; i < groups.length; i++) {
+            if (groups[i] === '*') {
+                if (firstWildcard === -1) {
+                    firstWildcard = i;
+                }
+            }
+            else if (firstWildcard !== -1) {
+                throw new address_error_1.AddressError('Wildcard `*` must only appear in trailing groups (e.g. `2001:db8:*:*:*:*:*:*`)');
+            }
+        }
+        const trailing = firstWildcard === -1 ? 0 : groups.length - firstWildcard;
+        const replaced = groups.map((g) => (g === '*' ? '0' : g));
+        const subnetBits = constants6.BITS - trailing * 16;
+        return new Address6(`${replaced.join(':')}/${subnetBits}`);
     }
     /**
      * Create an IPv6-mapped address given an IPv4 address
-     * @memberof Address6
-     * @static
      * @param {string} address - An IPv4 address string
      * @returns {Address6}
      * @example
@@ -51902,35 +52425,34 @@ class Address6 {
         return new Address6(`::ffff:${address4.correctForm()}/${mask6}`);
     }
     /**
-     * Return an address from ip6.arpa form
-     * @memberof Address6
-     * @static
+     * Return an address from ip6.arpa form. A full 32-nibble name gives a /128
+     * address; a shorter name, as used for a delegated reverse zone, gives the
+     * network it covers, with a subnet mask of four bits per nibble, so
+     * `fromArpa(x.reverseForm())` round-trips {@link reverseForm} for any prefix.
      * @param {string} arpaFormAddress - an 'ip6.arpa' form address
      * @returns {Adress6}
      * @example
      * var address = Address6.fromArpa(e.f.f.f.3.c.2.6.f.f.f.e.6.6.8.e.1.0.6.7.9.4.e.c.0.0.0.0.1.0.0.2.ip6.arpa.)
      * address.correctForm(); // '2001:0:ce49:7601:e866:efff:62c3:fffe'
+     * Address6.fromArpa('8.b.d.0.1.0.0.2.ip6.arpa.').networkForm(); // '2001:db8::/32'
      */
     static fromArpa(arpaFormAddress) {
-        // remove ending ".ip6.arpa." or just "."
-        let address = arpaFormAddress.replace(/(\.ip6\.arpa)?\.$/, '');
-        const semicolonAmount = 7;
-        // correct ip6.arpa form with ending removed will be 63 characters
-        if (address.length !== 63) {
+        // remove an ending ".ip6.arpa", with or without the root dot
+        const nibbles = arpaFormAddress.replace(/(\.ip6\.arpa)?\.?$/, '');
+        if (!/^[0-9a-f](\.[0-9a-f]){0,31}$/i.test(nibbles)) {
             throw new address_error_1.AddressError("Invalid 'ip6.arpa' form.");
         }
-        const parts = address.split('.').reverse();
-        for (let i = semicolonAmount; i > 0; i--) {
-            const insertIndex = i * 4;
-            parts.splice(insertIndex, 0, ':');
+        const reversed = nibbles.split('.').reverse();
+        const subnetMask = reversed.length * 4;
+        const hex = reversed.join('').padEnd(32, '0');
+        const groups = [];
+        for (let i = 0; i < constants6.GROUPS; i++) {
+            groups.push(hex.slice(i * 4, (i + 1) * 4));
         }
-        address = parts.join('');
-        return new Address6(address);
+        return new Address6(`${groups.join(':')}/${subnetMask}`);
     }
     /**
      * Return the Microsoft UNC transcription of the address
-     * @memberof Address6
-     * @instance
      * @returns {String} the Microsoft UNC transcription of the address
      */
     microsoftTranscription() {
@@ -51938,8 +52460,6 @@ class Address6 {
     }
     /**
      * Return the first n bits of the address, defaulting to the subnet mask
-     * @memberof Address6
-     * @instance
      * @param {number} [mask=subnet] - the number of bits to mask
      * @returns {String} the first n bits of the address as a string
      */
@@ -51948,8 +52468,6 @@ class Address6 {
     }
     /**
      * Return the number of possible subnets of a given size in the address
-     * @memberof Address6
-     * @instance
      * @param {number} [subnetSize=128] - the subnet size
      * @returns {String}
      */
@@ -51965,8 +52483,6 @@ class Address6 {
     }
     /**
      * Helper function getting start address.
-     * @memberof Address6
-     * @instance
      * @returns {bigint}
      */
     _startAddress() {
@@ -51975,8 +52491,6 @@ class Address6 {
     /**
      * The first address in the range given by this address' subnet
      * Often referred to as the Network Address.
-     * @memberof Address6
-     * @instance
      * @returns {Address6}
      */
     startAddress() {
@@ -51985,8 +52499,6 @@ class Address6 {
     /**
      * The first host address in the range given by this address's subnet ie
      * the first address after the Network Address
-     * @memberof Address6
-     * @instance
      * @returns {Address6}
      */
     startAddressExclusive() {
@@ -51995,28 +52507,26 @@ class Address6 {
     }
     /**
      * Helper function getting end address.
-     * @memberof Address6
-     * @instance
      * @returns {bigint}
      */
     _endAddress() {
         return BigInt(`0b${this.mask() + '1'.repeat(constants6.BITS - this.subnetMask)}`);
     }
     /**
-     * The last address in the range given by this address' subnet
-     * Often referred to as the Broadcast
-     * @memberof Address6
-     * @instance
+     * The last address in the range given by this address's subnet. IPv6 has
+     * no broadcast address, so this is an ordinary assignable address (in a
+     * 64-bit-interface-identifier subnet it falls inside the reserved
+     * subnet-anycast block of [RFC 2526](https://datatracker.ietf.org/doc/html/rfc2526)).
      * @returns {Address6}
      */
     endAddress() {
         return Address6.fromBigInt(this._endAddress());
     }
     /**
-     * The last host address in the range given by this address's subnet ie
-     * the last address prior to the Broadcast Address
-     * @memberof Address6
-     * @instance
+     * The address one before {@link endAddress}. This is the IPv6 counterpart
+     * of the IPv4 method that skips the broadcast address; IPv6 has no broadcast,
+     * so it drops exactly one address and does not model the 128 reserved
+     * subnet-anycast identifiers of [RFC 2526](https://datatracker.ietf.org/doc/html/rfc2526).
      * @returns {Address6}
      */
     endAddressExclusive() {
@@ -52024,36 +52534,100 @@ class Address6 {
         return Address6.fromBigInt(this._endAddress() - adjust);
     }
     /**
-     * Return the scope of the address
-     * @memberof Address6
-     * @instance
+     * Returns the address `n` addresses after this one (or before, when `n` is
+     * negative), keeping this address's subnet mask. Throws `AddressError` when
+     * the result would fall outside the IPv6 address space or `n` is not an
+     * integer.
+     * @param {number | bigint} n
+     * @returns {Address6}
+     * @example
+     * new Address6('2001:db8::/64').offset(1).correctForm(); // '2001:db8::1'
+     */
+    offset(n) {
+        return Address6.fromBigInt(common.offsetBigInt(this.bigInt(), n, constants6.BITS, 'IPv6')).withSubnetMask(this.subnetMask);
+    }
+    /**
+     * Returns the network that follows this address's network: the address after
+     * {@link endAddress}, with the same subnet mask. Throws `AddressError` when
+     * this network is the last one in the address space.
+     * @returns {Address6}
+     * @example
+     * new Address6('2001:db8::/64').nextNetwork().networkForm(); // '2001:db8:0:1::/64'
+     */
+    nextNetwork() {
+        return Address6.fromBigInt(common.offsetBigInt(this._endAddress(), 1, constants6.BITS, 'IPv6')).withSubnetMask(this.subnetMask);
+    }
+    withSubnetMask(subnetMask) {
+        return new Address6(`${this.correctForm()}/${subnetMask}`);
+    }
+    /**
+     * The hex form of the subnet mask, e.g. `ffff:ffff:ffff:ffff::` for a
+     * `/64`. Returns an `Address6`; call `.correctForm()` for the string.
+     * @returns {Address6}
+     */
+    subnetMaskAddress() {
+        return Address6.fromBigInt(BigInt(`0b${'1'.repeat(this.subnetMask)}${'0'.repeat(constants6.BITS - this.subnetMask)}`));
+    }
+    /**
+     * The Cisco-style wildcard mask, e.g. `::ffff:ffff:ffff:ffff` for a
+     * `/64`. This is the bitwise inverse of `subnetMaskAddress()`. Returns
+     * an `Address6`; call `.correctForm()` for the string.
+     * @returns {Address6}
+     */
+    wildcardMask() {
+        return Address6.fromBigInt(BigInt(`0b${'0'.repeat(this.subnetMask)}${'1'.repeat(constants6.BITS - this.subnetMask)}`));
+    }
+    /**
+     * The network address in CIDR string form, e.g. `2001:db8::/32` for
+     * `2001:db8::1/32`. For an address with no explicit subnet the prefix
+     * is `/128`, e.g. `networkForm()` on `2001:db8::1` returns
+     * `2001:db8::1/128`.
+     * @returns {string}
+     */
+    networkForm() {
+        return `${this.startAddress().correctForm()}/${this.subnetMask}`;
+    }
+    /**
+     * Return the scope of the address. The 4-bit scope field
+     * ([RFC 4291 §2.7](https://datatracker.ietf.org/doc/html/rfc4291#section-2.7))
+     * is only defined for multicast addresses; for unicast addresses the scope
+     * is derived from the address type per
+     * [RFC 4007 §6](https://datatracker.ietf.org/doc/html/rfc4007#section-6).
      * @returns {String}
      */
     getScope() {
-        let scope = constants6.SCOPES[parseInt(this.getBits(12, 16).toString(10), 10)];
-        if (this.getType() === 'Global unicast' && scope !== 'Link local') {
-            scope = 'Global';
+        const type = this.getType();
+        if (type === 'Multicast' || type.startsWith('Multicast ')) {
+            const scope = constants6.SCOPES[parseInt(this.getBits(12, 16).toString(10), 10)];
+            return scope || 'Unknown';
         }
-        return scope || 'Unknown';
+        // RFC 4291 §2.5.3: the loopback address is treated as having Link-Local
+        // scope. (Multicast scope 1, "Interface-Local", is a different concept
+        // used only for loopback transmission of multicast.)
+        if (type === 'Link-local unicast' || type === 'Loopback') {
+            return 'Link local';
+        }
+        // RFC 4007 §6: the unspecified address has no scope.
+        if (type === 'Unspecified') {
+            return 'Unknown';
+        }
+        return 'Global';
     }
     /**
      * Return the type of the address
-     * @memberof Address6
-     * @instance
      * @returns {String}
      */
     getType() {
-        for (const subnet of Object.keys(constants6.TYPES)) {
-            if (this.isInSubnet(new Address6(subnet))) {
-                return constants6.TYPES[subnet];
+        for (let i = 0; i < TYPE_SUBNETS.length; i++) {
+            const entry = TYPE_SUBNETS[i];
+            if (this.isHostInSubnet(entry[0])) {
+                return entry[1];
             }
         }
         return 'Global unicast';
     }
     /**
      * Return the bits in the given range as a BigInt
-     * @memberof Address6
-     * @instance
      * @returns {bigint}
      */
     getBits(start, end) {
@@ -52061,8 +52635,6 @@ class Address6 {
     }
     /**
      * Return the bits in the given range as a base-2 string
-     * @memberof Address6
-     * @instance
      * @returns {String}
      */
     getBitsBase2(start, end) {
@@ -52070,8 +52642,6 @@ class Address6 {
     }
     /**
      * Return the bits in the given range as a base-16 string
-     * @memberof Address6
-     * @instance
      * @returns {String}
      */
     getBitsBase16(start, end) {
@@ -52085,8 +52655,6 @@ class Address6 {
     }
     /**
      * Return the bits that are set past the subnet mask length
-     * @memberof Address6
-     * @instance
      * @returns {String}
      */
     getBitsPastSubnet() {
@@ -52094,10 +52662,8 @@ class Address6 {
     }
     /**
      * Return the reversed ip6.arpa form of the address
-     * @memberof Address6
      * @param {Object} options
      * @param {boolean} options.omitSuffix - omit the "ip6.arpa" suffix
-     * @instance
      * @returns {String}
      */
     reverseForm(options) {
@@ -52123,10 +52689,10 @@ class Address6 {
         return 'ip6.arpa.';
     }
     /**
-     * Return the correct form of the address
-     * @memberof Address6
-     * @instance
-     * @returns {String}
+     * Returns the address in correct form, per
+     * [RFC 5952](https://datatracker.ietf.org/doc/html/rfc5952): leading zeros
+     * stripped, the longest run of zero groups collapsed to `::`, and hex digits
+     * lowercased (e.g. `2001:db8::1`). This is the recommended form for display.
      */
     correctForm() {
         let i;
@@ -52170,8 +52736,6 @@ class Address6 {
     }
     /**
      * Return a zero-padded base-2 string representation of the address
-     * @memberof Address6
-     * @instance
      * @returns {String}
      * @example
      * var address = new Address6('2001:4860:4001:803::1011');
@@ -52180,27 +52744,58 @@ class Address6 {
      * //  0000000000000000000000000000000000000000000000000001000000010001'
      */
     binaryZeroPad() {
-        return this.bigInt().toString(2).padStart(constants6.BITS, '0');
+        if (this._binaryZeroPad === undefined) {
+            this._binaryZeroPad = this.bigInt().toString(2).padStart(constants6.BITS, '0');
+        }
+        return this._binaryZeroPad;
     }
+    /**
+     * Parses a v4-in-v6 string (e.g. `::ffff:192.168.0.1`) by extracting the
+     * trailing IPv4 address into `this.address4` / `this.parsedAddress4` and
+     * returning the address with the v4 portion converted to two v6 groups.
+     * Used internally by `parse()`.
+     */
     // TODO: Improve the semantics of this helper function
     parse4in6(address) {
+        if (address.indexOf('.') === -1) {
+            return address;
+        }
         const groups = address.split(':');
         const lastGroup = groups.slice(-1)[0];
+        // RE_ADDRESS rejects octets with a leading zero, so a dotted-quad tail is
+        // matched permissively first: that way this notation still gets its own
+        // message with the offending octet highlighted, rather than falling
+        // through as an unrecognized group.
+        const v4Octets = lastGroup.split('.');
+        if (v4Octets.length === constants4.GROUPS &&
+            v4Octets.every((octet) => /^\d{1,3}$/.test(octet))) {
+            if (v4Octets.some((octet) => /^0\d/.test(octet))) {
+                // The prefix groups haven't been through the bad-character check
+                // yet, so escape them before including in the error HTML.
+                const highlighted = v4Octets.map(spanLeadingZeroes4).join('.');
+                const prefix = groups.slice(0, -1).map(helpers.escapeHtml).join(':');
+                const separator = groups.length > 1 ? ':' : '';
+                throw new address_error_1.AddressError("IPv4 addresses can't have leading zeroes.", `${prefix}${separator}${highlighted}`);
+            }
+        }
         const address4 = lastGroup.match(constants4.RE_ADDRESS);
         if (address4) {
             this.parsedAddress4 = address4[0];
-            this.address4 = new ipv4_1.Address4(this.parsedAddress4);
-            for (let i = 0; i < this.address4.groups; i++) {
-                if (/^0[0-9]+/.test(this.address4.parsedAddress[i])) {
-                    throw new address_error_1.AddressError("IPv4 addresses can't have leading zeroes.", address.replace(constants4.RE_ADDRESS, this.address4.parsedAddress.map(spanLeadingZeroes4).join('.')));
-                }
-            }
+            const v4Suffix = this.subnetMask >= 96 ? `/${this.subnetMask - 96}` : '';
+            this.address4 = new ipv4_1.Address4(`${this.parsedAddress4}${v4Suffix}`);
             this.v4 = true;
             groups[groups.length - 1] = this.address4.toGroup6();
             address = groups.join(':');
         }
         return address;
     }
+    /**
+     * Parses an IPv6 address string into its 8 hexadecimal groups (expanding
+     * any `::` elision and any trailing v4-in-v6 portion) and stores the result
+     * on `this.parsedAddress`. Called automatically by the constructor; you
+     * typically don't need to call it directly. Throws `AddressError` if the
+     * input is malformed.
+     */
     // TODO: Make private?
     parse(address) {
         address = this.parse4in6(address);
@@ -52250,18 +52845,16 @@ class Address6 {
         return groups;
     }
     /**
-     * Return the canonical form of the address
-     * @memberof Address6
-     * @instance
-     * @returns {String}
+     * Returns the canonical (fully expanded) form of the address: all 8 groups,
+     * each padded to 4 hex digits, with no `::` collapsing
+     * (e.g. `2001:0db8:0000:0000:0000:0000:0000:0001`). Useful for sorting and
+     * byte-exact comparison.
      */
     canonicalForm() {
         return this.parsedAddress.map(paddedHex).join(':');
     }
     /**
      * Return the decimal form of the address
-     * @memberof Address6
-     * @instance
      * @returns {String}
      */
     decimal() {
@@ -52269,17 +52862,17 @@ class Address6 {
     }
     /**
      * Return the address as a BigInt
-     * @memberof Address6
-     * @instance
      * @returns {bigint}
      */
     bigInt() {
         return BigInt(`0x${this.parsedAddress.map(paddedHex).join('')}`);
     }
     /**
-     * Return the last two groups of this address as an IPv4 address string
-     * @memberof Address6
-     * @instance
+     * Return the last two groups of this address as an IPv4 address string.
+     * If this address carries a CIDR prefix that covers the trailing 32 bits
+     * (i.e. `subnetMask >= 96`), the resulting `Address4` inherits the
+     * corresponding v4 prefix (`subnetMask - 96`); otherwise it defaults to
+     * `/32`.
      * @returns {Address4}
      * @example
      * var address = new Address6('2001:4860:4001::1825:bf11');
@@ -52287,12 +52880,21 @@ class Address6 {
      */
     to4() {
         const binary = this.binaryZeroPad().split('');
-        return ipv4_1.Address4.fromHex(BigInt(`0b${binary.slice(96, 128).join('')}`).toString(16));
+        const hex = BigInt(`0b${binary.slice(96, 128).join('')}`)
+            .toString(16)
+            .padStart(8, '0');
+        if (this.subnetMask >= 96) {
+            const v4Mask = this.subnetMask - 96;
+            const groups = [];
+            for (let i = 0; i < 8; i += 2) {
+                groups.push(parseInt(hex.slice(i, i + 2), 16));
+            }
+            return new ipv4_1.Address4(`${groups.join('.')}/${v4Mask}`);
+        }
+        return ipv4_1.Address4.fromHex(hex);
     }
     /**
      * Return the v4-in-v6 form of the address
-     * @memberof Address6
-     * @instance
      * @returns {String}
      */
     to4in6() {
@@ -52303,13 +52905,13 @@ class Address6 {
         if (!/:$/.test(correct)) {
             infix = ':';
         }
-        return correct + infix + address4.address;
+        return correct + infix + address4.correctForm();
     }
     /**
-     * Return an object containing the Teredo properties of the address
-     * @memberof Address6
-     * @instance
-     * @returns {Object}
+     * Decodes the Teredo tunneling fields embedded in this address. Returns the
+     * Teredo prefix, server IPv4, client IPv4, raw flag bits, cone-NAT flag,
+     * UDP port, and Microsoft-format flag breakdown (reserved, universal/local,
+     * group/individual, nonce). Only meaningful for addresses in `2001::/32`.
      */
     inspectTeredo() {
         /*
@@ -52335,12 +52937,10 @@ class Address6 {
         */
         const prefix = this.getBitsBase16(0, 32);
         const bitsForUdpPort = this.getBits(80, 96);
-        // eslint-disable-next-line no-bitwise
         const udpPort = (bitsForUdpPort ^ BigInt('0xffff')).toString();
         const server4 = ipv4_1.Address4.fromHex(this.getBitsBase16(32, 64));
         const bitsForClient4 = this.getBits(96, 128);
-        // eslint-disable-next-line no-bitwise
-        const client4 = ipv4_1.Address4.fromHex((bitsForClient4 ^ BigInt('0xffffffff')).toString(16));
+        const client4 = ipv4_1.Address4.fromHex((bitsForClient4 ^ BigInt('0xffffffff')).toString(16).padStart(8, '0'));
         const flagsBase2 = this.getBitsBase2(64, 80);
         const coneNat = (0, common_1.testBit)(flagsBase2, 15);
         const reserved = (0, common_1.testBit)(flagsBase2, 14);
@@ -52363,10 +52963,9 @@ class Address6 {
         };
     }
     /**
-     * Return an object containing the 6to4 properties of the address
-     * @memberof Address6
-     * @instance
-     * @returns {Object}
+     * Decodes the 6to4 tunneling fields embedded in this address. Returns the
+     * 6to4 prefix and the embedded IPv4 gateway address. Only meaningful for
+     * addresses in `2002::/16`.
      */
     inspect6to4() {
         /*
@@ -52382,8 +52981,6 @@ class Address6 {
     }
     /**
      * Return a v6 6to4 address from a v6 v4inv6 address
-     * @memberof Address6
-     * @instance
      * @returns {Address6}
      */
     to6to4() {
@@ -52400,15 +52997,88 @@ class Address6 {
         return new Address6(addr6to4);
     }
     /**
-     * Return a byte array
-     * @memberof Address6
-     * @instance
+     * Embed an IPv4 address into a NAT64 IPv6 address using the encoding
+     * defined by [RFC 6052](https://datatracker.ietf.org/doc/html/rfc6052).
+     * The default prefix is the well-known prefix `64:ff9b::/96`. The prefix
+     * length must be one of 32, 40, 48, 56, 64, or 96; for prefixes shorter
+     * than /64 the IPv4 octets are split around the reserved bits 64–71.
+     * @example
+     * Address6.fromAddress4Nat64('192.0.2.33').correctForm(); // '64:ff9b::c000:221'
+     * Address6.fromAddress4Nat64('192.0.2.33', '2001:db8::/32').correctForm(); // '2001:db8:c000:221::'
+     */
+    static fromAddress4Nat64(address, prefix = '64:ff9b::/96') {
+        const v4 = new ipv4_1.Address4(address);
+        const prefix6 = new Address6(prefix);
+        const pl = prefix6.subnetMask;
+        if (pl !== 32 && pl !== 40 && pl !== 48 && pl !== 56 && pl !== 64 && pl !== 96) {
+            throw new address_error_1.AddressError('NAT64 prefix length must be 32, 40, 48, 56, 64, or 96');
+        }
+        const prefixBits = prefix6.binaryZeroPad();
+        const v4Bits = v4.binaryZeroPad();
+        let bits;
+        if (pl === 96) {
+            bits = prefixBits.slice(0, 96) + v4Bits;
+        }
+        else {
+            const beforeU = 64 - pl;
+            bits = [
+                prefixBits.slice(0, pl),
+                v4Bits.slice(0, beforeU),
+                // Bits 64 to 71 are the reserved u octet and are always zero.
+                '00000000',
+                v4Bits.slice(beforeU),
+                '0'.repeat(128 - 72 - (32 - beforeU)),
+            ].join('');
+        }
+        const hex = BigInt(`0b${bits}`).toString(16).padStart(32, '0');
+        const groups = [];
+        for (let i = 0; i < 8; i++) {
+            groups.push(hex.slice(i * 4, (i + 1) * 4));
+        }
+        return new Address6(groups.join(':'));
+    }
+    /**
+     * Extract the embedded IPv4 address from a NAT64 IPv6 address using the
+     * encoding defined by [RFC 6052](https://datatracker.ietf.org/doc/html/rfc6052).
+     * The default prefix is the well-known prefix `64:ff9b::/96`. Returns
+     * `null` if this address is not contained within the given prefix.
+     * @example
+     * new Address6('64:ff9b::c000:221').toAddress4Nat64()!.correctForm(); // '192.0.2.33'
+     */
+    toAddress4Nat64(prefix = '64:ff9b::/96') {
+        const prefix6 = new Address6(prefix);
+        const pl = prefix6.subnetMask;
+        if (pl !== 32 && pl !== 40 && pl !== 48 && pl !== 56 && pl !== 64 && pl !== 96) {
+            throw new address_error_1.AddressError('NAT64 prefix length must be 32, 40, 48, 56, 64, or 96');
+        }
+        if (!this.isHostInSubnet(prefix6)) {
+            return null;
+        }
+        const bits = this.binaryZeroPad();
+        let v4Bits;
+        if (pl === 96) {
+            v4Bits = bits.slice(96, 128);
+        }
+        else {
+            const beforeU = 64 - pl;
+            v4Bits = bits.slice(pl, pl + beforeU) + bits.slice(72, 72 + (32 - beforeU));
+        }
+        const octets = [];
+        for (let i = 0; i < 4; i++) {
+            octets.push(parseInt(v4Bits.slice(i * 8, (i + 1) * 8), 2).toString());
+        }
+        return new ipv4_1.Address4(octets.join('.'));
+    }
+    /**
+     * Return a byte array.
+     *
+     * To get a Node.js `Buffer`, wrap the result: `Buffer.from(address.toByteArray())`.
      * @returns {Array}
      */
     toByteArray() {
-        const valueWithoutPadding = this.bigInt().toString(16);
-        const leadingPad = '0'.repeat(valueWithoutPadding.length % 2);
-        const value = `${leadingPad}${valueWithoutPadding}`;
+        const value = this.bigInt()
+            .toString(16)
+            .padStart(constants6.BITS / 4, '0');
         const bytes = [];
         for (let i = 0, length = value.length; i < length; i += 2) {
             bytes.push(parseInt(value.substring(i, i + 2), 16));
@@ -52416,30 +53086,45 @@ class Address6 {
         return bytes;
     }
     /**
-     * Return an unsigned byte array
-     * @memberof Address6
-     * @instance
+     * Return an unsigned byte array.
+     *
+     * To get a Node.js `Buffer`, wrap the result: `Buffer.from(address.toUnsignedByteArray())`.
      * @returns {Array}
      */
     toUnsignedByteArray() {
+        // toByteArray() emits 0 to 255, so unsigning it is an identity mapping and
+        // the two methods return equal arrays. 11.0.0 keeps one of them and makes
+        // this a deprecated alias; test/common-test.ts fails at that version.
         return this.toByteArray().map(unsignByte);
     }
     /**
-     * Convert a byte array to an Address6 object
-     * @memberof Address6
-     * @static
+     * Convert a byte array to an Address6 object.
+     *
+     * Accepts unsigned bytes (0 to 255) or signed bytes (-128 to 127, as an
+     * `Int8Array` or a Java `byte[]` holds them), folding signed values to their
+     * unsigned equivalent. Throws `AddressError` unless given exactly 16
+     * integers from -128 to 255.
+     *
+     * To convert from a Node.js `Buffer`, spread it: `Address6.fromByteArray([...buf])`.
      * @returns {Address6}
      */
     static fromByteArray(bytes) {
+        // Address4.fromByteArray takes unsigned bytes only. 11.0.0 aligns this
+        // method with it, at which point the -128 floor here, unsignByte, and the
+        // mapping below all go; test/common-test.ts fails at that version.
+        common.assertByteArray(bytes, 16, 'IPv6', -128);
         return this.fromUnsignedByteArray(bytes.map(unsignByte));
     }
     /**
-     * Convert an unsigned byte array to an Address6 object
-     * @memberof Address6
-     * @static
+     * Convert an unsigned byte array to an Address6 object.
+     *
+     * Throws `AddressError` unless given exactly 16 integers from 0 to 255.
+     *
+     * To convert from a Node.js `Buffer`, spread it: `Address6.fromUnsignedByteArray([...buf])`.
      * @returns {Address6}
      */
     static fromUnsignedByteArray(bytes) {
+        common.assertByteArray(bytes, 16, 'IPv6', 0);
         const BYTE_MAX = BigInt('256');
         let result = BigInt('0');
         let multiplier = BigInt('1');
@@ -52451,76 +53136,234 @@ class Address6 {
     }
     /**
      * Returns true if the address is in the canonical form, false otherwise
-     * @memberof Address6
-     * @instance
      * @returns {boolean}
      */
     isCanonical() {
         return this.addressMinusSuffix === this.canonicalForm();
     }
     /**
-     * Returns true if the address is a link local address, false otherwise
-     * @memberof Address6
-     * @instance
+     * Returns true if the address is a link-local unicast address in `fe80::/10`
+     * ([RFC 4291 §2.4](https://datatracker.ietf.org/doc/html/rfc4291#section-2.4))
+     * or an IPv4-mapped / NAT64 address whose embedded IPv4 address is link-local
+     * (`169.254.0.0/16`, e.g. `::ffff:169.254.169.254`), false otherwise.
      * @returns {boolean}
      */
     isLinkLocal() {
-        // Zeroes are required, i.e. we can't check isInSubnet with 'fe80::/10'
-        if (this.getBitsBase2(0, 64) ===
-            '1111111010000000000000000000000000000000000000000000000000000000') {
-            return true;
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isLinkLocal();
         }
-        return false;
+        return this.isHostInSubnet(LINK_LOCAL_SUBNET);
     }
     /**
      * Returns true if the address is a multicast address, false otherwise
-     * @memberof Address6
-     * @instance
      * @returns {boolean}
      */
     isMulticast() {
-        return this.getType() === 'Multicast';
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isMulticast();
+        }
+        const type = this.getType();
+        return type === 'Multicast' || type.startsWith('Multicast ');
     }
     /**
-     * Returns true if the address is a v4-in-v6 address, false otherwise
-     * @memberof Address6
-     * @instance
+     * Returns true if the address was written in v4-in-v6 dotted-quad notation
+     * (e.g. `::ffff:127.0.0.1`), false otherwise. This is a notation-level flag
+     * and does not reflect whether the address bits lie in the IPv4-mapped
+     * (`::ffff:0:0/96`) subnet — for that, see {@link isMapped4}.
      * @returns {boolean}
      */
     is4() {
         return this.v4;
     }
     /**
+     * Returns true if the address is an IPv4-mapped IPv6 address in
+     * `::ffff:0:0/96` ([RFC 4291 §2.5.5.2](https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2)),
+     * false otherwise. Unlike {@link is4}, this checks the underlying address
+     * bits rather than the textual notation, so `::ffff:127.0.0.1` and
+     * `::ffff:7f00:1` both return true.
+     * @returns {boolean}
+     */
+    isMapped4() {
+        return this.isHostInSubnet(IPV4_MAPPED_SUBNET);
+    }
+    /**
+     * If this address embeds a routable IPv4 address — i.e. it is IPv4-mapped
+     * (`::ffff:0:0/96`) or sits in the NAT64 well-known prefix (`64:ff9b::/96`,
+     * [RFC 6052](https://datatracker.ietf.org/doc/html/rfc6052)) — return that
+     * embedded address as an {@link Address4}; otherwise return null.
+     *
+     * The special-property checks (`isLoopback`, `isLinkLocal`, `isMulticast`,
+     * `isUnspecified`, `isPrivate`, `isCGNAT`, `isBroadcast`) call this first and
+     * delegate to the embedded {@link Address4} when present, so a literal such as
+     * `::ffff:127.0.0.1` is classified by what it actually reaches (loopback)
+     * rather than by its IPv6 wrapper (which `getType()` reports as IPv4-mapped).
+     * This matters wherever the checks back a trust-boundary decision (e.g. an
+     * SSRF allow/deny filter): without normalization, `::ffff:10.0.0.1`,
+     * `::ffff:169.254.169.254`, `64:ff9b::7f00:1`, etc. would all read as
+     * non-internal.
+     * @returns {Address4 | null}
+     */
+    embeddedIPv4() {
+        if (this.isMapped4() || this.isHostInSubnet(NAT64_WELL_KNOWN_SUBNET)) {
+            return this.to4();
+        }
+        return null;
+    }
+    /**
      * Returns true if the address is a Teredo address, false otherwise
-     * @memberof Address6
-     * @instance
      * @returns {boolean}
      */
     isTeredo() {
-        return this.isInSubnet(new Address6('2001::/32'));
+        return this.isHostInSubnet(TEREDO_SUBNET);
     }
     /**
      * Returns true if the address is a 6to4 address, false otherwise
-     * @memberof Address6
-     * @instance
      * @returns {boolean}
      */
     is6to4() {
-        return this.isInSubnet(new Address6('2002::/16'));
+        return this.isHostInSubnet(SIX_TO_FOUR_SUBNET);
     }
     /**
      * Returns true if the address is a loopback address, false otherwise
-     * @memberof Address6
-     * @instance
      * @returns {boolean}
      */
     isLoopback() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isLoopback();
+        }
         return this.getType() === 'Loopback';
+    }
+    /**
+     * Returns true if the address is a Unique Local Address in `fc00::/7` ([RFC 4193](https://datatracker.ietf.org/doc/html/rfc4193)). ULAs are the IPv6 equivalent of IPv4 [RFC 1918](https://datatracker.ietf.org/doc/html/rfc1918) private addresses.
+     * @returns {boolean}
+     */
+    isULA() {
+        return this.isHostInSubnet(ULA_SUBNET);
+    }
+    /**
+     * Returns true if the address is private, i.e. a Unique Local Address in
+     * `fc00::/7` ([RFC 4193](https://datatracker.ietf.org/doc/html/rfc4193)), an
+     * address in the NAT64 local-use range `64:ff9b:1::/48`
+     * ([RFC 8215](https://datatracker.ietf.org/doc/html/rfc8215)), or an
+     * IPv4-mapped / NAT64 well-known address whose embedded IPv4 address is in
+     * one of the [RFC 1918](https://datatracker.ietf.org/doc/html/rfc1918)
+     * private ranges (e.g. `::ffff:10.0.0.1`). This is the IPv6 counterpart to
+     * {@link Address4.isPrivate}; use it instead of {@link isULA} when you need to
+     * catch mapped RFC 1918 addresses as well as native ULAs.
+     *
+     * The local-use NAT64 range is reported private as a whole rather than by
+     * its embedded IPv4 address: an operator may carve a prefix of any RFC 6052
+     * length out of `64:ff9b:1::/48`, so the same bits decode to different IPv4
+     * addresses under different deployments and no single decoding is correct.
+     * Use {@link toAddress4Nat64} with the deployment's prefix to decode one.
+     * @returns {boolean}
+     */
+    isPrivate() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isPrivate();
+        }
+        return this.isULA() || this.isHostInSubnet(NAT64_LOCAL_USE_SUBNET);
+    }
+    /**
+     * Returns true if the address is an IPv4-mapped / NAT64 address whose embedded
+     * IPv4 address is in the carrier-grade NAT range `100.64.0.0/10`
+     * ([RFC 6598](https://datatracker.ietf.org/doc/html/rfc6598)), false
+     * otherwise. There is no native IPv6 CGNAT range, so this only ever returns
+     * true for an embedded IPv4 address (e.g. `::ffff:100.64.0.1`).
+     * @returns {boolean}
+     */
+    isCGNAT() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isCGNAT();
+        }
+        return false;
+    }
+    /**
+     * Returns true if the address is an IPv4-mapped / NAT64 address whose embedded
+     * IPv4 address is the limited broadcast address `255.255.255.255`
+     * ([RFC 919](https://datatracker.ietf.org/doc/html/rfc919)), false otherwise.
+     * There is no IPv6 broadcast, so this only ever returns true for an embedded
+     * IPv4 address (e.g. `::ffff:255.255.255.255`).
+     * @returns {boolean}
+     */
+    isBroadcast() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isBroadcast();
+        }
+        return false;
+    }
+    /**
+     * Returns true if the address is the unspecified address `::`.
+     * @returns {boolean}
+     */
+    isUnspecified() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isUnspecified();
+        }
+        return this.getType() === 'Unspecified';
+    }
+    /**
+     * Returns true if the address is in the documentation prefix `2001:db8::/32` ([RFC 3849](https://datatracker.ietf.org/doc/html/rfc3849)).
+     * @returns {boolean}
+     */
+    isDocumentation() {
+        return DOCUMENTATION_SUBNETS.some((subnet) => this.isHostInSubnet(subnet));
+    }
+    /**
+     * Returns true if the address is in the benchmarking range `2001:2::/48`
+     * ([RFC 5180](https://datatracker.ietf.org/doc/html/rfc5180)) or is an
+     * IPv4-mapped / NAT64 address whose embedded IPv4 address is in
+     * `198.18.0.0/15`, false otherwise.
+     * @returns {boolean}
+     */
+    isBenchmarking() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isBenchmarking();
+        }
+        return this.isHostInSubnet(BENCHMARKING_SUBNET);
+    }
+    /**
+     * Returns true if the address is globally reachable: inside the global
+     * unicast allocation `2000::/3` (the only range the [IANA IPv6 Address Space
+     * Registry](https://www.iana.org/assignments/ipv6-address-space/) assigns
+     * for global unicast; everything else is reserved, ULA, link-local, or
+     * multicast) and not in any block the [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry/)
+     * marks as not globally reachable. An IPv4-mapped or NAT64 well-known
+     * address answers for its embedded IPv4 address, so `::ffff:10.0.0.1` and
+     * `64:ff9b::7f00:1` are not global. Teredo (`2001::/32`) and 6to4
+     * (`2002::/16`) are not global either: the registry lists them as N/A and a
+     * packet to one needs a relay.
+     *
+     * This covers everything the individual classifiers name and the blocks they
+     * do not: the discard-only prefix `100::/64`, the IETF protocol assignments
+     * in `2001::/23`, the deprecated site-local `fec0::/10` and IPv4-compatible
+     * `::/96` ranges, and unallocated space such as `4000::/3`. It is the single
+     * predicate to use where a request must not reach an internal or
+     * special-purpose destination; see SECURITY.md.
+     * @returns {boolean}
+     */
+    isGlobal() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+            return embedded.isGlobal();
+        }
+        return (this.isHostInSubnet(GLOBAL_UNICAST_SUBNET) &&
+            common.isGloballyReachable.call(this, SPECIAL_PURPOSE_V6));
     }
     // #endregion
     // #region HTML
     /**
-     * @returns {String} the address in link form with a default port of 80
+     * Returns the address as an HTTP URL with the host bracketed, e.g.
+     * `http://[2001:db8::1]/`. If `optionalPort` is provided it is appended,
+     * e.g. `http://[2001:db8::1]:8080/`.
      */
     href(optionalPort) {
         if (optionalPort === undefined) {
@@ -52532,7 +53375,12 @@ class Address6 {
         return `http://[${this.correctForm()}]${optionalPort}/`;
     }
     /**
-     * @returns {String} a link suitable for conveying the address via a URL hash
+     * Returns an HTML `<a>` element whose `href` encodes the address in a URL
+     * hash fragment (default prefix `/#address=`). Useful for linking between
+     * pages of an address-inspector UI.
+     * @param options.className - CSS class for the rendered `<a>` element
+     * @param options.prefix - hash prefix prepended to the address (default `/#address=`)
+     * @param options.v4 - when true, render the address in v4-in-v6 form
      */
     link(options) {
         if (!options) {
@@ -52552,25 +53400,33 @@ class Address6 {
             formFunction = this.to4in6;
         }
         const form = formFunction.call(this);
+        const safeHref = helpers.escapeHtml(`${options.prefix}${form}`);
+        const safeForm = helpers.escapeHtml(form);
         if (options.className) {
-            return `<a href="${options.prefix}${form}" class="${options.className}">${form}</a>`;
+            const safeClass = helpers.escapeHtml(options.className);
+            return `<a href="${safeHref}" class="${safeClass}">${safeForm}</a>`;
         }
-        return `<a href="${options.prefix}${form}">${form}</a>`;
+        return `<a href="${safeHref}">${safeForm}</a>`;
     }
     /**
-     * Groups an address
+     * Groups an address.
+     *
+     * Returns an HTML fragment: each group is wrapped in a `<span>` carrying
+     * the group classes an address-inspector UI hovers on. The address content
+     * is HTML-escaped; anything you concatenate around it is your
+     * responsibility.
      * @returns {String}
      */
     group() {
         if (this.elidedGroups === 0) {
             // The simple case
-            return helpers.simpleGroup(this.address).join(':');
+            return helpers.simpleGroup(this.addressMinusSuffix).join(':');
         }
         assert(typeof this.elidedGroups === 'number');
         assert(typeof this.elisionBegin === 'number');
         // The elided case
         const output = [];
-        const [left, right] = this.address.split('::');
+        const [left, right] = this.addressMinusSuffix.split('::');
         if (left.length) {
             output.push(...helpers.simpleGroup(left));
         }
@@ -52600,8 +53456,6 @@ class Address6 {
     /**
      * Generate a regular expression string that can be used to find or validate
      * all variations of this address
-     * @memberof Address6
-     * @instance
      * @param {boolean} substringSearch
      * @returns {string}
      */
@@ -52646,8 +53500,6 @@ class Address6 {
     /**
      * Generate a regular expression that can be used to find or validate all
      * variations of this address.
-     * @memberof Address6
-     * @instance
      * @param {boolean} substringSearch
      * @returns {RegExp}
      */
@@ -52656,6 +53508,24 @@ class Address6 {
     }
 }
 exports.Address6 = Address6;
+const TYPE_SUBNETS = Object.keys(constants6.TYPES).map((subnet) => [
+    new Address6(subnet),
+    constants6.TYPES[subnet],
+]);
+const TEREDO_SUBNET = new Address6('2001::/32');
+const SIX_TO_FOUR_SUBNET = new Address6('2002::/16');
+const ULA_SUBNET = new Address6('fc00::/7');
+const LINK_LOCAL_SUBNET = new Address6('fe80::/10');
+const DOCUMENTATION_SUBNETS = [new Address6('2001:db8::/32'), new Address6('3fff::/20')];
+const BENCHMARKING_SUBNET = new Address6('2001:2::/48');
+const GLOBAL_UNICAST_SUBNET = new Address6('2000::/3');
+const SPECIAL_PURPOSE_V6 = constants6.SPECIAL_PURPOSE.map(([cidr, , reachable]) => ({
+    subnet: new Address6(cidr),
+    reachable,
+}));
+const IPV4_MAPPED_SUBNET = new Address6('::ffff:0:0/96');
+const NAT64_WELL_KNOWN_SUBNET = new Address6('64:ff9b::/96');
+const NAT64_LOCAL_USE_SUBNET = new Address6('64:ff9b:1::/48');
 //# sourceMappingURL=ipv6.js.map
 
 /***/ }),
@@ -52666,11 +53536,54 @@ exports.Address6 = Address6;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.RE_SUBNET_STRING = exports.RE_ADDRESS = exports.GROUPS = exports.BITS = void 0;
+exports.SPECIAL_PURPOSE = exports.RE_SUBNET_STRING = exports.RE_ADDRESS = exports.GROUPS = exports.BITS = void 0;
 exports.BITS = 32;
 exports.GROUPS = 4;
-exports.RE_ADDRESS = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/g;
+// Each octet is 0-255 written without a leading zero. A leading zero is
+// octal to the WHATWG URL parser, inet_aton, and getaddrinfo, but decimal to
+// parseInt(part, 10), so accepting the notation would make this library
+// disagree with the network stack about which host a string names.
+exports.RE_ADDRESS = /^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$/g;
 exports.RE_SUBNET_STRING = /\/\d{1,2}$/;
+/**
+ * The IANA IPv4 Special-Purpose Address Registry
+ * (https://www.iana.org/assignments/iana-ipv4-special-registry/), one entry
+ * per block: `[cidr, name, globallyReachable]`. A `null` reachability means
+ * the registry leaves the column blank and the block inherits the answer of
+ * the block containing it (or is global when nothing contains it).
+ *
+ * `Address4.isGlobal()` answers from the most specific entry containing the
+ * address. `test/data/iana-corpus.json` is generated from the registry's CSV
+ * and pins this table to it.
+ */
+exports.SPECIAL_PURPOSE = [
+    ['0.0.0.0/8', 'This network', false],
+    ['0.0.0.0/32', 'This host on this network', false],
+    ['10.0.0.0/8', 'Private-Use', false],
+    ['100.64.0.0/10', 'Shared Address Space', false],
+    ['127.0.0.0/8', 'Loopback', false],
+    ['169.254.0.0/16', 'Link Local', false],
+    ['172.16.0.0/12', 'Private-Use', false],
+    ['192.0.0.0/24', 'IETF Protocol Assignments', false],
+    ['192.0.0.0/29', 'IPv4 Service Continuity Prefix', false],
+    ['192.0.0.8/32', 'IPv4 dummy address', false],
+    ['192.0.0.9/32', 'Port Control Protocol Anycast', true],
+    ['192.0.0.10/32', 'Traversal Using Relays around NAT Anycast', true],
+    ['192.0.0.170/32', 'NAT64/DNS64 Discovery', false],
+    ['192.0.0.171/32', 'NAT64/DNS64 Discovery', false],
+    ['192.0.2.0/24', 'Documentation (TEST-NET-1)', false],
+    ['192.31.196.0/24', 'AS112-v4', true],
+    ['192.52.193.0/24', 'AMT', true],
+    ['192.88.99.0/24', 'Deprecated (6to4 Relay Anycast)', null],
+    ['192.88.99.2/32', '6a44-relay anycast address', false],
+    ['192.168.0.0/16', 'Private-Use', false],
+    ['192.175.48.0/24', 'Direct Delegation AS112 Service', true],
+    ['198.18.0.0/15', 'Benchmarking', false],
+    ['198.51.100.0/24', 'Documentation (TEST-NET-2)', false],
+    ['203.0.113.0/24', 'Documentation (TEST-NET-3)', false],
+    ['240.0.0.0/4', 'Reserved', false],
+    ['255.255.255.255/32', 'Limited Broadcast', false],
+];
 //# sourceMappingURL=constants.js.map
 
 /***/ }),
@@ -52681,7 +53594,7 @@ exports.RE_SUBNET_STRING = /\/\d{1,2}$/;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.RE_URL_WITH_PORT = exports.RE_URL = exports.RE_ZONE_STRING = exports.RE_SUBNET_STRING = exports.RE_BAD_ADDRESS = exports.RE_BAD_CHARACTERS = exports.TYPES = exports.SCOPES = exports.GROUPS = exports.BITS = void 0;
+exports.SPECIAL_PURPOSE = exports.RE_URL_WITH_PORT = exports.RE_URL = exports.RE_ZONE_STRING = exports.RE_SUBNET_STRING = exports.RE_BAD_ADDRESS = exports.RE_BAD_CHARACTERS = exports.TYPES = exports.SCOPES = exports.GROUPS = exports.BITS = void 0;
 exports.BITS = 128;
 exports.GROUPS = 8;
 /**
@@ -52725,8 +53638,20 @@ exports.TYPES = {
     'ff05::1:3/128': 'Multicast (All DHCP servers in this site)',
     '::/128': 'Unspecified',
     '::1/128': 'Loopback',
+    '::ffff:0:0/96': 'IPv4-mapped',
     'ff00::/8': 'Multicast',
     'fe80::/10': 'Link-local unicast',
+    'fc00::/7': 'Unique local',
+    '2001::/32': 'Teredo',
+    '2001:2::/48': 'Benchmarking',
+    '2002::/16': '6to4',
+    '2001:db8::/32': 'Documentation',
+    '3fff::/20': 'Documentation',
+    '100::/64': 'Discard-only',
+    'fec0::/10': 'Site-local unicast (deprecated)',
+    '::/96': 'IPv4-compatible (deprecated)',
+    '64:ff9b::/96': 'NAT64 (well-known)',
+    '64:ff9b:1::/48': 'NAT64 (local-use)',
 };
 /**
  * A regular expression that matches bad characters in an IPv6 address
@@ -52752,8 +53677,48 @@ exports.RE_SUBNET_STRING = /\/\d{1,3}(?=%|$)/;
  * @static
  */
 exports.RE_ZONE_STRING = /%.*$/;
-exports.RE_URL = /^\[{0,1}([0-9a-f:]+)\]{0,1}/;
-exports.RE_URL_WITH_PORT = /\[([0-9a-f:]+)\]:([0-9]{1,5})/;
+exports.RE_URL = /^(?:\[([0-9a-f:.]+)\]|([0-9a-f:.]+))(?:[/?#].*)?$/i;
+exports.RE_URL_WITH_PORT = /^\[([0-9a-f:.]+)\]:([0-9]{1,5})(?:[/?#].*)?$/i;
+/**
+ * The IANA IPv6 Special-Purpose Address Registry
+ * (https://www.iana.org/assignments/iana-ipv6-special-registry/), one entry
+ * per block: `[cidr, name, globallyReachable]`. A `null` reachability means
+ * the registry says N/A or leaves the column blank; N/A blocks (Teredo, 6to4)
+ * are treated as not globally reachable, since a packet to one needs a relay,
+ * and blank blocks inherit the answer of the block containing them.
+ *
+ * `Address6.isGlobal()` answers from the most specific entry containing the
+ * address, after delegating IPv4-mapped and NAT64 well-known addresses to the
+ * embedded IPv4 address. `test/data/iana-corpus.json` is generated from the
+ * registry's CSV and pins this table to it.
+ */
+exports.SPECIAL_PURPOSE = [
+    ['::1/128', 'Loopback Address', false],
+    ['::/128', 'Unspecified Address', false],
+    ['::ffff:0:0/96', 'IPv4-mapped Address', false],
+    ['64:ff9b::/96', 'IPv4-IPv6 Translat.', true],
+    ['64:ff9b:1::/48', 'IPv4-IPv6 Translat.', false],
+    ['100::/64', 'Discard-Only Address Block', false],
+    ['100:0:0:1::/64', 'Dummy IPv6 Prefix', false],
+    ['2001::/23', 'IETF Protocol Assignments', false],
+    ['2001::/32', 'TEREDO', false],
+    ['2001:1::1/128', 'Port Control Protocol Anycast', true],
+    ['2001:1::2/128', 'Traversal Using Relays around NAT Anycast', true],
+    ['2001:1::3/128', 'DNS-SD Service Registration Protocol Anycast', true],
+    ['2001:2::/48', 'Benchmarking', false],
+    ['2001:3::/32', 'AMT', true],
+    ['2001:4:112::/48', 'AS112-v6', true],
+    ['2001:10::/28', 'Deprecated (previously ORCHID)', null],
+    ['2001:20::/28', 'ORCHIDv2', true],
+    ['2001:30::/28', 'Drone Remote ID Protocol Entity Tags (DETs) Prefix', true],
+    ['2001:db8::/32', 'Documentation', false],
+    ['2002::/16', '6to4', false],
+    ['2620:4f:8000::/48', 'Direct Delegation AS112 Service', true],
+    ['3fff::/20', 'Documentation', false],
+    ['5f00::/16', 'Segment Routing (SRv6) SIDs', false],
+    ['fc00::/7', 'Unique-Local', false],
+    ['fe80::/10', 'Link-Local Unicast', false],
+];
 //# sourceMappingURL=constants.js.map
 
 /***/ }),
@@ -52764,15 +53729,24 @@ exports.RE_URL_WITH_PORT = /\[([0-9a-f:]+)\]:([0-9]{1,5})/;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.escapeHtml = escapeHtml;
 exports.spanAllZeroes = spanAllZeroes;
 exports.spanAll = spanAll;
 exports.spanLeadingZeroes = spanLeadingZeroes;
 exports.simpleGroup = simpleGroup;
+function escapeHtml(s) {
+    return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 /**
  * @returns {String} the string with all zeroes contained in a <span>
  */
 function spanAllZeroes(s) {
-    return s.replace(/(0+)/g, '<span class="zero">$1</span>');
+    return escapeHtml(s).replace(/(0+)/g, '<span class="zero">$1</span>');
 }
 /**
  * @returns {String} the string with each character contained in a <span>
@@ -52780,11 +53754,11 @@ function spanAllZeroes(s) {
 function spanAll(s, offset = 0) {
     const letters = s.split('');
     return letters
-        .map((n, i) => `<span class="digit value-${n} position-${i + offset}">${spanAllZeroes(n)}</span>`)
+        .map((n, i) => `<span class="digit value-${escapeHtml(n)} position-${i + offset}">${spanAllZeroes(n)}</span>`)
         .join('');
 }
 function spanLeadingZeroesSimple(group) {
-    return group.replace(/^(0+)/, '<span class="zero">$1</span>');
+    return escapeHtml(group).replace(/^(0+)/, '<span class="zero">$1</span>');
 }
 /**
  * @returns {String} the string with leading zeroes contained in a <span>
@@ -53090,217 +54064,470 @@ function plural(ms, msAbs, n, name) {
 
 /***/ }),
 
-/***/ 35192:
-/***/ (function(__unused_webpack_module, exports) {
+/***/ 78755:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
-// Generated by CoffeeScript 1.12.7
-(function() {
-  var Netmask, atob, chr, chr0, chrA, chra, ip2long, long2ip;
+"use strict";
 
-  long2ip = function(long) {
-    var a, b, c, d;
-    a = (long & (0xff << 24)) >>> 24;
-    b = (long & (0xff << 16)) >>> 16;
-    c = (long & (0xff << 8)) >>> 8;
-    d = long & 0xff;
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.long2ip = exports.ip2long = exports.Netmask = void 0;
+const netmask4_1 = __nccwpck_require__(51783);
+Object.defineProperty(exports, "ip2long", ({ enumerable: true, get: function () { return netmask4_1.ip2long; } }));
+Object.defineProperty(exports, "long2ip", ({ enumerable: true, get: function () { return netmask4_1.long2ip; } }));
+const netmask6_1 = __nccwpck_require__(95273);
+class Netmask {
+    constructor(net, mask) {
+        if (typeof net !== 'string') {
+            throw new Error("Missing `net' parameter");
+        }
+        // Detect IPv6: check the address part (before any /) for ':'
+        const addrPart = net.indexOf('/') !== -1 ? net.substring(0, net.indexOf('/')) : net;
+        if (addrPart.indexOf(':') !== -1) {
+            this._impl = new netmask6_1.Netmask6Impl(net, mask);
+        }
+        else {
+            this._impl = new netmask4_1.Netmask4Impl(net, mask);
+        }
+        this.base = this._impl.base;
+        this.mask = this._impl.mask;
+        this.hostmask = this._impl.hostmask;
+        this.bitmask = this._impl.bitmask;
+        this.size = this._impl.size;
+        this.first = this._impl.first;
+        this.last = this._impl.last;
+        this.broadcast = this._impl.broadcast;
+        if (this._impl instanceof netmask4_1.Netmask4Impl) {
+            this.maskLong = this._impl.maskLong;
+            this.netLong = this._impl.netLong;
+        }
+        else {
+            this.maskLong = 0;
+            this.netLong = 0;
+        }
+    }
+    contains(ip) {
+        if (typeof ip === 'string') {
+            // If it has a '/', it's a CIDR block — wrap it
+            if (ip.indexOf('/') > 0) {
+                ip = new Netmask(ip);
+            }
+            // IPv4 shorthand (fewer than 4 octets, no colons) — wrap it
+            else if (ip.indexOf(':') === -1 && ip.split('.').length !== 4) {
+                ip = new Netmask(ip);
+            }
+        }
+        if (ip instanceof Netmask) {
+            return this.contains(ip.base) && this.contains(ip.broadcast || ip.last);
+        }
+        // Plain IP string — delegate to impl
+        return this._impl.contains(ip);
+    }
+    next(count = 1) {
+        const nextImpl = this._impl.next(count);
+        const result = new Netmask(nextImpl.base, nextImpl.bitmask);
+        return result;
+    }
+    /** @deprecated */
+    forEach(fn) {
+        this._impl.forEach(fn);
+    }
+    toString() {
+        return this._impl.toString();
+    }
+}
+exports.Netmask = Netmask;
+
+
+/***/ }),
+
+/***/ 51783:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Netmask4Impl = void 0;
+exports.ip2long = ip2long;
+exports.long2ip = long2ip;
+function long2ip(long) {
+    const a = (long & (0xff << 24)) >>> 24;
+    const b = (long & (0xff << 16)) >>> 16;
+    const c = (long & (0xff << 8)) >>> 8;
+    const d = long & 0xff;
     return [a, b, c, d].join('.');
-  };
-
-  ip2long = function(ip) {
-    var b, c, i, j, n, ref;
-    b = [];
-    for (i = j = 0; j <= 3; i = ++j) {
-      if (ip.length === 0) {
-        break;
-      }
-      if (i > 0) {
-        if (ip[0] !== '.') {
-          throw new Error('Invalid IP');
-        }
-        ip = ip.substring(1);
-      }
-      ref = atob(ip), n = ref[0], c = ref[1];
-      ip = ip.substring(c);
-      b.push(n);
-    }
-    if (ip.length !== 0) {
-      throw new Error('Invalid IP');
-    }
-    switch (b.length) {
-      case 1:
-        if (b[0] > 0xFFFFFFFF) {
-          throw new Error('Invalid IP');
-        }
-        return b[0] >>> 0;
-      case 2:
-        if (b[0] > 0xFF || b[1] > 0xFFFFFF) {
-          throw new Error('Invalid IP');
-        }
-        return (b[0] << 24 | b[1]) >>> 0;
-      case 3:
-        if (b[0] > 0xFF || b[1] > 0xFF || b[2] > 0xFFFF) {
-          throw new Error('Invalid IP');
-        }
-        return (b[0] << 24 | b[1] << 16 | b[2]) >>> 0;
-      case 4:
-        if (b[0] > 0xFF || b[1] > 0xFF || b[2] > 0xFF || b[3] > 0xFF) {
-          throw new Error('Invalid IP');
-        }
-        return (b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]) >>> 0;
-      default:
-        throw new Error('Invalid IP');
-    }
-  };
-
-  chr = function(b) {
-    return b.charCodeAt(0);
-  };
-
-  chr0 = chr('0');
-
-  chra = chr('a');
-
-  chrA = chr('A');
-
-  atob = function(s) {
-    var base, dmax, i, n, start;
-    n = 0;
-    base = 10;
-    dmax = '9';
-    i = 0;
+}
+const chr0 = '0'.charCodeAt(0);
+const chra = 'a'.charCodeAt(0);
+const chrA = 'A'.charCodeAt(0);
+function parseNum(s) {
+    let n = 0;
+    let base = 10;
+    let dmax = '9';
+    let i = 0;
     if (s.length > 1 && s[i] === '0') {
-      if (s[i + 1] === 'x' || s[i + 1] === 'X') {
-        i += 2;
-        base = 16;
-      } else if ('0' <= s[i + 1] && s[i + 1] <= '9') {
-        i++;
-        base = 8;
-        dmax = '7';
-      }
-    }
-    start = i;
-    while (i < s.length) {
-      if ('0' <= s[i] && s[i] <= dmax) {
-        n = (n * base + (chr(s[i]) - chr0)) >>> 0;
-      } else if (base === 16) {
-        if ('a' <= s[i] && s[i] <= 'f') {
-          n = (n * base + (10 + chr(s[i]) - chra)) >>> 0;
-        } else if ('A' <= s[i] && s[i] <= 'F') {
-          n = (n * base + (10 + chr(s[i]) - chrA)) >>> 0;
-        } else {
-          break;
+        if (s[i + 1] === 'x' || s[i + 1] === 'X') {
+            i += 2;
+            base = 16;
         }
-      } else {
-        break;
-      }
-      if (n > 0xFFFFFFFF) {
-        throw new Error('too large');
-      }
-      i++;
+        else if ('0' <= s[i + 1] && s[i + 1] <= '9') {
+            i++;
+            base = 8;
+            dmax = '7';
+        }
+    }
+    const start = i;
+    while (i < s.length) {
+        if ('0' <= s[i] && s[i] <= dmax) {
+            n = (n * base + (s.charCodeAt(i) - chr0)) >>> 0;
+        }
+        else if (base === 16) {
+            if ('a' <= s[i] && s[i] <= 'f') {
+                n = (n * base + (10 + s.charCodeAt(i) - chra)) >>> 0;
+            }
+            else if ('A' <= s[i] && s[i] <= 'F') {
+                n = (n * base + (10 + s.charCodeAt(i) - chrA)) >>> 0;
+            }
+            else {
+                break;
+            }
+        }
+        else {
+            break;
+        }
+        if (n > 0xFFFFFFFF) {
+            throw new Error('too large');
+        }
+        i++;
     }
     if (i === start) {
-      throw new Error('empty octet');
+        throw new Error('empty octet');
     }
     return [n, i];
-  };
-
-  Netmask = (function() {
-    function Netmask(net, mask) {
-      var error, i, j, ref;
-      if (typeof net !== 'string') {
-        throw new Error("Missing `net' parameter");
-      }
-      if (!mask) {
-        ref = net.split('/', 2), net = ref[0], mask = ref[1];
-      }
-      if (!mask) {
-        mask = 32;
-      }
-      if (typeof mask === 'string' && mask.indexOf('.') > -1) {
-        try {
-          this.maskLong = ip2long(mask);
-        } catch (error1) {
-          error = error1;
-          throw new Error("Invalid mask: " + mask);
-        }
-        for (i = j = 32; j >= 0; i = --j) {
-          if (this.maskLong === (0xffffffff << (32 - i)) >>> 0) {
-            this.bitmask = i;
+}
+function ip2long(ip) {
+    const b = [];
+    for (let i = 0; i <= 3; i++) {
+        if (ip.length === 0) {
             break;
-          }
         }
-      } else if (mask || mask === 0) {
-        this.bitmask = parseInt(mask, 10);
-        this.maskLong = 0;
-        if (this.bitmask > 0) {
-          this.maskLong = (0xffffffff << (32 - this.bitmask)) >>> 0;
+        if (i > 0) {
+            if (ip[0] !== '.') {
+                throw new Error('Invalid IP');
+            }
+            ip = ip.substring(1);
         }
-      } else {
-        throw new Error("Invalid mask: empty");
-      }
-      try {
-        this.netLong = (ip2long(net) & this.maskLong) >>> 0;
-      } catch (error1) {
-        error = error1;
-        throw new Error("Invalid net address: " + net);
-      }
-      if (!(this.bitmask <= 32)) {
-        throw new Error("Invalid mask for ip4: " + mask);
-      }
-      this.size = Math.pow(2, 32 - this.bitmask);
-      this.base = long2ip(this.netLong);
-      this.mask = long2ip(this.maskLong);
-      this.hostmask = long2ip(~this.maskLong);
-      this.first = this.bitmask <= 30 ? long2ip(this.netLong + 1) : this.base;
-      this.last = this.bitmask <= 30 ? long2ip(this.netLong + this.size - 2) : long2ip(this.netLong + this.size - 1);
-      this.broadcast = this.bitmask <= 30 ? long2ip(this.netLong + this.size - 1) : void 0;
+        const [n, c] = parseNum(ip);
+        ip = ip.substring(c);
+        b.push(n);
     }
+    if (ip.length !== 0) {
+        throw new Error('Invalid IP');
+    }
+    switch (b.length) {
+        case 1:
+            if (b[0] > 0xFFFFFFFF) {
+                throw new Error('Invalid IP');
+            }
+            return b[0] >>> 0;
+        case 2:
+            if (b[0] > 0xFF || b[1] > 0xFFFFFF) {
+                throw new Error('Invalid IP');
+            }
+            return (b[0] << 24 | b[1]) >>> 0;
+        case 3:
+            if (b[0] > 0xFF || b[1] > 0xFF || b[2] > 0xFFFF) {
+                throw new Error('Invalid IP');
+            }
+            return (b[0] << 24 | b[1] << 16 | b[2]) >>> 0;
+        case 4:
+            if (b[0] > 0xFF || b[1] > 0xFF || b[2] > 0xFF || b[3] > 0xFF) {
+                throw new Error('Invalid IP');
+            }
+            return (b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]) >>> 0;
+        default:
+            throw new Error('Invalid IP');
+    }
+}
+class Netmask4Impl {
+    constructor(net, mask) {
+        if (typeof net !== 'string') {
+            throw new Error("Missing `net' parameter");
+        }
+        let maskStr = mask;
+        if (!maskStr) {
+            const parts = net.split('/', 2);
+            net = parts[0];
+            maskStr = parts[1];
+        }
+        if (!maskStr) {
+            maskStr = 32;
+        }
+        if (typeof maskStr === 'string' && maskStr.indexOf('.') > -1) {
+            try {
+                this.maskLong = ip2long(maskStr);
+            }
+            catch (error) {
+                throw new Error("Invalid mask: " + maskStr);
+            }
+            this.bitmask = NaN;
+            for (let i = 32; i >= 0; i--) {
+                if (this.maskLong === (0xffffffff << (32 - i)) >>> 0) {
+                    this.bitmask = i;
+                    break;
+                }
+            }
+        }
+        else if (maskStr || maskStr === 0) {
+            this.bitmask = parseInt(maskStr, 10);
+            this.maskLong = 0;
+            if (this.bitmask > 0) {
+                this.maskLong = (0xffffffff << (32 - this.bitmask)) >>> 0;
+            }
+        }
+        else {
+            throw new Error("Invalid mask: empty");
+        }
+        try {
+            this.netLong = (ip2long(net) & this.maskLong) >>> 0;
+        }
+        catch (error) {
+            throw new Error("Invalid net address: " + net);
+        }
+        if (!(this.bitmask <= 32)) {
+            throw new Error("Invalid mask for ip4: " + maskStr);
+        }
+        this.size = Math.pow(2, 32 - this.bitmask);
+        this.base = long2ip(this.netLong);
+        this.mask = long2ip(this.maskLong);
+        this.hostmask = long2ip(~this.maskLong);
+        this.first = this.bitmask <= 30 ? long2ip(this.netLong + 1) : this.base;
+        this.last = this.bitmask <= 30 ? long2ip(this.netLong + this.size - 2) : long2ip(this.netLong + this.size - 1);
+        this.broadcast = this.bitmask <= 30 ? long2ip(this.netLong + this.size - 1) : undefined;
+    }
+    contains(ip) {
+        if (typeof ip === 'string' && (ip.indexOf('/') > 0 || ip.split('.').length !== 4)) {
+            ip = new Netmask4Impl(ip);
+        }
+        if (ip instanceof Netmask4Impl) {
+            return this.contains(ip.base) && this.contains((ip.broadcast || ip.last));
+        }
+        else {
+            return (ip2long(ip) & this.maskLong) >>> 0 === (this.netLong & this.maskLong) >>> 0;
+        }
+    }
+    next(count = 1) {
+        return new Netmask4Impl(long2ip(this.netLong + (this.size * count)), this.mask);
+    }
+    forEach(fn) {
+        let long = ip2long(this.first);
+        const lastLong = ip2long(this.last);
+        let index = 0;
+        while (long <= lastLong) {
+            fn(long2ip(long), long, index);
+            index++;
+            long++;
+        }
+    }
+    toString() {
+        return this.base + "/" + this.bitmask;
+    }
+}
+exports.Netmask4Impl = Netmask4Impl;
 
-    Netmask.prototype.contains = function(ip) {
-      if (typeof ip === 'string' && (ip.indexOf('/') > 0 || ip.split('.').length !== 4)) {
-        ip = new Netmask(ip);
-      }
-      if (ip instanceof Netmask) {
-        return this.contains(ip.base) && this.contains(ip.broadcast || ip.last);
-      } else {
-        return (ip2long(ip) & this.maskLong) >>> 0 === (this.netLong & this.maskLong) >>> 0;
-      }
-    };
 
-    Netmask.prototype.next = function(count) {
-      if (count == null) {
-        count = 1;
-      }
-      return new Netmask(long2ip(this.netLong + (this.size * count)), this.mask);
-    };
+/***/ }),
 
-    Netmask.prototype.forEach = function(fn) {
-      var index, lastLong, long;
-      long = ip2long(this.first);
-      lastLong = ip2long(this.last);
-      index = 0;
-      while (long <= lastLong) {
-        fn(long2ip(long), long, index);
-        index++;
-        long++;
-      }
-    };
+/***/ 95273:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
-    Netmask.prototype.toString = function() {
-      return this.base + "/" + this.bitmask;
-    };
+"use strict";
 
-    return Netmask;
-
-  })();
-
-  exports.ip2long = ip2long;
-
-  exports.long2ip = long2ip;
-
-  exports.Netmask = Netmask;
-
-}).call(this);
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Netmask6Impl = void 0;
+exports.ip6bigint = ip6bigint;
+exports.bigint2ip6 = bigint2ip6;
+const netmask4_1 = __nccwpck_require__(51783);
+const MAX_IPV6 = (1n << 128n) - 1n;
+function ip6bigint(ip) {
+    // Strip zone ID (e.g. %eth0)
+    const zoneIdx = ip.indexOf('%');
+    if (zoneIdx !== -1) {
+        ip = ip.substring(0, zoneIdx);
+    }
+    // Handle mixed IPv4-mapped (e.g. ::ffff:192.168.1.1)
+    const lastColon = ip.lastIndexOf(':');
+    if (lastColon !== -1 && ip.indexOf('.', lastColon) !== -1) {
+        const ipv4Part = ip.substring(lastColon + 1);
+        const ipv4Long = (0, netmask4_1.ip2long)(ipv4Part);
+        // IPv4 part replaces last 2 groups (32 bits), expand prefix to 6 groups
+        const ipv6Prefix = ip.substring(0, lastColon + 1) + '0:0';
+        const prefixVal = parseIPv6Pure(ipv6Prefix);
+        return (prefixVal & ~0xffffffffn) | BigInt(ipv4Long);
+    }
+    return parseIPv6Pure(ip);
+}
+function parseIPv6Pure(ip) {
+    const doubleColonIdx = ip.indexOf('::');
+    let groups;
+    if (doubleColonIdx !== -1) {
+        const left = ip.substring(0, doubleColonIdx);
+        const right = ip.substring(doubleColonIdx + 2);
+        const leftGroups = left === '' ? [] : left.split(':');
+        const rightGroups = right === '' ? [] : right.split(':');
+        const missing = 8 - leftGroups.length - rightGroups.length;
+        if (missing < 0) {
+            throw new Error('Invalid IPv6: too many groups');
+        }
+        groups = [...leftGroups, ...Array(missing).fill('0'), ...rightGroups];
+    }
+    else {
+        groups = ip.split(':');
+    }
+    if (groups.length !== 8) {
+        throw new Error('Invalid IPv6: expected 8 groups, got ' + groups.length);
+    }
+    let result = 0n;
+    for (let i = 0; i < 8; i++) {
+        const g = groups[i];
+        if (g.length === 0 || g.length > 4) {
+            throw new Error('Invalid IPv6: bad group "' + g + '"');
+        }
+        const val = parseInt(g, 16);
+        if (isNaN(val) || val < 0 || val > 0xffff) {
+            throw new Error('Invalid IPv6: bad group "' + g + '"');
+        }
+        result = (result << 16n) | BigInt(val);
+    }
+    return result;
+}
+function bigint2ip6(n) {
+    if (n < 0n || n > MAX_IPV6) {
+        throw new Error('Invalid IPv6 address value');
+    }
+    const groups = [];
+    for (let i = 0; i < 8; i++) {
+        groups.unshift(Number(n & 0xffffn));
+        n >>= 16n;
+    }
+    // RFC 5952: find longest run of consecutive zero groups
+    let bestStart = -1;
+    let bestLen = 0;
+    let curStart = -1;
+    let curLen = 0;
+    for (let i = 0; i < 8; i++) {
+        if (groups[i] === 0) {
+            if (curStart === -1) {
+                curStart = i;
+                curLen = 1;
+            }
+            else {
+                curLen++;
+            }
+        }
+        else {
+            if (curLen > bestLen && curLen >= 2) {
+                bestStart = curStart;
+                bestLen = curLen;
+            }
+            curStart = -1;
+            curLen = 0;
+        }
+    }
+    if (curLen > bestLen && curLen >= 2) {
+        bestStart = curStart;
+        bestLen = curLen;
+    }
+    if (bestStart !== -1 && bestStart + bestLen === 8 && bestStart > 0) {
+        const before = groups.slice(0, bestStart).map(g => g.toString(16));
+        return before.join(':') + '::';
+    }
+    else if (bestStart === 0) {
+        const after = groups.slice(bestLen).map(g => g.toString(16));
+        return '::' + after.join(':');
+    }
+    else if (bestStart > 0) {
+        const before = groups.slice(0, bestStart).map(g => g.toString(16));
+        const after = groups.slice(bestStart + bestLen).map(g => g.toString(16));
+        return before.join(':') + '::' + after.join(':');
+    }
+    else {
+        return groups.map(g => g.toString(16)).join(':');
+    }
+}
+class Netmask6Impl {
+    constructor(net, mask) {
+        if (typeof net !== 'string') {
+            throw new Error("Missing `net' parameter");
+        }
+        let prefixLen = mask;
+        if (prefixLen === undefined || prefixLen === null) {
+            const slashIdx = net.indexOf('/');
+            if (slashIdx !== -1) {
+                prefixLen = parseInt(net.substring(slashIdx + 1), 10);
+                net = net.substring(0, slashIdx);
+            }
+            else {
+                prefixLen = 128;
+            }
+        }
+        if (isNaN(prefixLen) || prefixLen < 0 || prefixLen > 128) {
+            throw new Error('Invalid mask for IPv6: ' + prefixLen);
+        }
+        this.bitmask = prefixLen;
+        if (this.bitmask === 0) {
+            this.maskBigint = 0n;
+        }
+        else {
+            this.maskBigint = (MAX_IPV6 >> BigInt(128 - this.bitmask)) << BigInt(128 - this.bitmask);
+        }
+        try {
+            this.netBigint = ip6bigint(net) & this.maskBigint;
+        }
+        catch (error) {
+            throw new Error('Invalid IPv6 net address: ' + net);
+        }
+        this.size = Number(1n << BigInt(128 - this.bitmask));
+        this.base = bigint2ip6(this.netBigint);
+        this.mask = bigint2ip6(this.maskBigint);
+        this.hostmask = bigint2ip6(~this.maskBigint & MAX_IPV6);
+        this.first = this.base;
+        this.last = bigint2ip6(this.netBigint + (1n << BigInt(128 - this.bitmask)) - 1n);
+        this.broadcast = undefined;
+    }
+    contains(ip) {
+        if (typeof ip === 'string') {
+            if (ip.indexOf('/') > 0) {
+                ip = new Netmask6Impl(ip);
+            }
+        }
+        if (ip instanceof Netmask6Impl) {
+            return this.contains(ip.base) && this.contains(ip.last);
+        }
+        else {
+            const addr = ip6bigint(ip);
+            return (addr & this.maskBigint) === this.netBigint;
+        }
+    }
+    next(count = 1) {
+        const sizeBig = 1n << BigInt(128 - this.bitmask);
+        return new Netmask6Impl(bigint2ip6(this.netBigint + sizeBig * BigInt(count)), this.bitmask);
+    }
+    forEach(fn) {
+        let addr = this.netBigint;
+        const sizeBig = 1n << BigInt(128 - this.bitmask);
+        const lastAddr = this.netBigint + sizeBig - 1n;
+        let index = 0;
+        while (addr <= lastAddr) {
+            fn(bigint2ip6(addr), Number(addr), index);
+            index++;
+            addr++;
+        }
+    }
+    toString() {
+        return this.base + '/' + this.bitmask;
+    }
+}
+exports.Netmask6Impl = Netmask6Impl;
 
 
 /***/ }),
@@ -53898,7 +55125,7 @@ function normalizeFamily(family) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-const netmask_1 = __nccwpck_require__(35192);
+const netmask_1 = __nccwpck_require__(78755);
 const util_1 = __nccwpck_require__(78696);
 /**
  * True iff the IP address of the host matches the specified IP address pattern.
@@ -57369,7 +58596,11 @@ var SocksClientState;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.ipToBuffer = exports.int32ToIpv4 = exports.ipv4ToInt32 = exports.validateSocksClientChainOptions = exports.validateSocksClientOptions = void 0;
+exports.validateSocksClientOptions = validateSocksClientOptions;
+exports.validateSocksClientChainOptions = validateSocksClientChainOptions;
+exports.ipv4ToInt32 = ipv4ToInt32;
+exports.int32ToIpv4 = int32ToIpv4;
+exports.ipToBuffer = ipToBuffer;
 const util_1 = __nccwpck_require__(79712);
 const constants_1 = __nccwpck_require__(24223);
 const stream = __nccwpck_require__(2203);
@@ -57409,7 +58640,6 @@ function validateSocksClientOptions(options, acceptedCommands = ['connect', 'bin
         throw new util_1.SocksClientError(constants_1.ERRORS.InvalidSocksClientOptionsExistingSocket, options);
     }
 }
-exports.validateSocksClientOptions = validateSocksClientOptions;
 /**
  * Validates the SocksClientChainOptions
  * @param options { SocksClientChainOptions }
@@ -57442,7 +58672,6 @@ function validateSocksClientChainOptions(options) {
         throw new util_1.SocksClientError(constants_1.ERRORS.InvalidSocksClientOptionsTimeout, options);
     }
 }
-exports.validateSocksClientChainOptions = validateSocksClientChainOptions;
 function validateCustomProxyAuth(proxy, options) {
     if (proxy.custom_auth_method !== undefined) {
         // Invalid auth method range
@@ -57502,7 +58731,6 @@ function ipv4ToInt32(ip) {
     // Convert the IPv4 address parts to an integer
     return address.toArray().reduce((acc, part) => (acc << 8) + part, 0) >>> 0;
 }
-exports.ipv4ToInt32 = ipv4ToInt32;
 function int32ToIpv4(int32) {
     // Extract each byte (octet) from the 32-bit integer
     const octet1 = (int32 >>> 24) & 0xff;
@@ -57512,7 +58740,6 @@ function int32ToIpv4(int32) {
     // Combine the octets into a string in IPv4 format
     return [octet1, octet2, octet3, octet4].join('.');
 }
-exports.int32ToIpv4 = int32ToIpv4;
 function ipToBuffer(ip) {
     if (net.isIPv4(ip)) {
         // Handle IPv4 addresses
@@ -57532,7 +58759,6 @@ function ipToBuffer(ip) {
         throw new Error('Invalid IP address format');
     }
 }
-exports.ipToBuffer = ipToBuffer;
 //# sourceMappingURL=helpers.js.map
 
 /***/ }),
@@ -57593,7 +58819,8 @@ exports.ReceiveBuffer = ReceiveBuffer;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.shuffleArray = exports.SocksClientError = void 0;
+exports.SocksClientError = void 0;
+exports.shuffleArray = shuffleArray;
 /**
  * Error wrapper for SocksClient
  */
@@ -57614,7 +58841,6 @@ function shuffleArray(array) {
         [array[i], array[j]] = [array[j], array[i]];
     }
 }
-exports.shuffleArray = shuffleArray;
 //# sourceMappingURL=util.js.map
 
 /***/ }),
@@ -61720,15 +62946,24 @@ exports.debug = debug; // for test
 "use strict";
 
 
+const createWebSocketStream = __nccwpck_require__(86412);
+const extension = __nccwpck_require__(61335);
+const PerMessageDeflate = __nccwpck_require__(4376);
+const Receiver = __nccwpck_require__(20893);
+const Sender = __nccwpck_require__(7389);
+const subprotocol = __nccwpck_require__(43332);
 const WebSocket = __nccwpck_require__(56681);
+const WebSocketServer = __nccwpck_require__(70129);
 
-WebSocket.createWebSocketStream = __nccwpck_require__(86412);
-WebSocket.Server = __nccwpck_require__(70129);
-WebSocket.Receiver = __nccwpck_require__(20893);
-WebSocket.Sender = __nccwpck_require__(7389);
-
+WebSocket.createWebSocketStream = createWebSocketStream;
+WebSocket.extension = extension;
+WebSocket.PerMessageDeflate = PerMessageDeflate;
+WebSocket.Receiver = Receiver;
+WebSocket.Sender = Sender;
+WebSocket.Server = WebSocketServer;
+WebSocket.subprotocol = subprotocol;
 WebSocket.WebSocket = WebSocket;
-WebSocket.WebSocketServer = WebSocket.Server;
+WebSocket.WebSocketServer = WebSocketServer;
 
 module.exports = WebSocket;
 
@@ -62518,6 +63753,9 @@ class PerMessageDeflate {
    *     acknowledge disabling of client context takeover
    * @param {Number} [options.concurrencyLimit=10] The number of concurrent
    *     calls to zlib
+   * @param {Boolean} [options.isServer=false] Create the instance in either
+   *     server or client mode
+   * @param {Number} [options.maxPayload=0] The maximum allowed message length
    * @param {(Boolean|Number)} [options.serverMaxWindowBits] Request/confirm the
    *     use of a custom server window size
    * @param {Boolean} [options.serverNoContextTakeover=false] Request/accept
@@ -62528,16 +63766,13 @@ class PerMessageDeflate {
    *     deflate
    * @param {Object} [options.zlibInflateOptions] Options to pass to zlib on
    *     inflate
-   * @param {Boolean} [isServer=false] Create the instance in either server or
-   *     client mode
-   * @param {Number} [maxPayload=0] The maximum allowed message length
    */
-  constructor(options, isServer, maxPayload) {
-    this._maxPayload = maxPayload | 0;
+  constructor(options) {
     this._options = options || {};
     this._threshold =
       this._options.threshold !== undefined ? this._options.threshold : 1024;
-    this._isServer = !!isServer;
+    this._maxPayload = this._options.maxPayload | 0;
+    this._isServer = !!this._options.isServer;
     this._deflate = null;
     this._inflate = null;
 
@@ -62648,7 +63883,9 @@ class PerMessageDeflate {
             (typeof opts.serverMaxWindowBits === 'number' &&
               opts.serverMaxWindowBits > params.server_max_window_bits))) ||
         (typeof opts.clientMaxWindowBits === 'number' &&
-          !params.client_max_window_bits)
+          (typeof params.client_max_window_bits === 'number'
+            ? opts.clientMaxWindowBits > params.client_max_window_bits
+            : !params.client_max_window_bits))
       ) {
         return false;
       }
@@ -63057,6 +64294,10 @@ class Receiver extends Writable {
    *     extensions
    * @param {Boolean} [options.isServer=false] Specifies whether to operate in
    *     client or server mode
+   * @param {Number} [options.maxBufferedChunks=0] The maximum number of
+   *     buffered data chunks
+   * @param {Number} [options.maxFragments=0] The maximum number of message
+   *     fragments
    * @param {Number} [options.maxPayload=0] The maximum allowed message length
    * @param {Boolean} [options.skipUTF8Validation=false] Specifies whether or
    *     not to skip UTF-8 validation for text and close messages
@@ -63071,6 +64312,8 @@ class Receiver extends Writable {
     this._binaryType = options.binaryType || BINARY_TYPES[0];
     this._extensions = options.extensions || {};
     this._isServer = !!options.isServer;
+    this._maxBufferedChunks = options.maxBufferedChunks | 0;
+    this._maxFragments = options.maxFragments | 0;
     this._maxPayload = options.maxPayload | 0;
     this._skipUTF8Validation = !!options.skipUTF8Validation;
     this[kWebSocket] = undefined;
@@ -63088,6 +64331,7 @@ class Receiver extends Writable {
 
     this._totalPayloadLength = 0;
     this._messageLength = 0;
+    this._numFragments = 0;
     this._fragments = [];
 
     this._errored = false;
@@ -63105,6 +64349,22 @@ class Receiver extends Writable {
    */
   _write(chunk, encoding, cb) {
     if (this._opcode === 0x08 && this._state == GET_INFO) return cb();
+
+    if (
+      this._maxBufferedChunks > 0 &&
+      this._buffers.length >= this._maxBufferedChunks
+    ) {
+      cb(
+        this.createError(
+          RangeError,
+          'Too many buffered chunks',
+          false,
+          1008,
+          'WS_ERR_TOO_MANY_BUFFERED_PARTS'
+        )
+      );
+      return;
+    }
 
     this._bufferedBytes += chunk.length;
     this._buffers.push(chunk);
@@ -63495,6 +64755,19 @@ class Receiver extends Writable {
       return;
     }
 
+    if (this._maxFragments > 0 && ++this._numFragments > this._maxFragments) {
+      const error = this.createError(
+        RangeError,
+        'Too many message fragments',
+        false,
+        1008,
+        'WS_ERR_TOO_MANY_BUFFERED_PARTS'
+      );
+
+      cb(error);
+      return;
+    }
+
     if (this._compressed) {
       this._state = INFLATING;
       this.decompress(data, cb);
@@ -63567,6 +64840,7 @@ class Receiver extends Writable {
     this._totalPayloadLength = 0;
     this._messageLength = 0;
     this._fragmented = 0;
+    this._numFragments = 0;
     this._fragments = [];
 
     if (this._opcode === 2) {
@@ -63735,6 +65009,9 @@ module.exports = Receiver;
 
 const { Duplex } = __nccwpck_require__(2203);
 const { randomFillSync } = __nccwpck_require__(76982);
+const {
+  types: { isUint8Array }
+} = __nccwpck_require__(39023);
 
 const PerMessageDeflate = __nccwpck_require__(4376);
 const { EMPTY_BUFFER, kWebSocket, NOOP } = __nccwpck_require__(71791);
@@ -63931,8 +65208,10 @@ class Sender {
 
       if (typeof data === 'string') {
         buf.write(data, 2);
-      } else {
+      } else if (isUint8Array(data)) {
         buf.set(data, 2);
+      } else {
+        throw new TypeError('Second argument must be a string or a Uint8Array');
       }
     }
 
@@ -64783,6 +66062,10 @@ class WebSocketServer extends EventEmitter {
    *     called
    * @param {Function} [options.handleProtocols] A hook to handle protocols
    * @param {String} [options.host] The hostname where to bind the server
+   * @param {Number} [options.maxBufferedChunks=262144] The maximum number of
+   *     buffered data chunks
+   * @param {Number} [options.maxFragments=16384] The maximum number of message
+   *     fragments
    * @param {Number} [options.maxPayload=104857600] The maximum allowed message
    *     size
    * @param {Boolean} [options.noServer=false] Enable no server mode
@@ -64805,6 +66088,8 @@ class WebSocketServer extends EventEmitter {
     options = {
       allowSynchronousEvents: true,
       autoPong: true,
+      maxBufferedChunks: 256 * 1024,
+      maxFragments: 16 * 1024,
       maxPayload: 100 * 1024 * 1024,
       skipUTF8Validation: false,
       perMessageDeflate: false,
@@ -65033,11 +66318,11 @@ class WebSocketServer extends EventEmitter {
       this.options.perMessageDeflate &&
       secWebSocketExtensions !== undefined
     ) {
-      const perMessageDeflate = new PerMessageDeflate(
-        this.options.perMessageDeflate,
-        true,
-        this.options.maxPayload
-      );
+      const perMessageDeflate = new PerMessageDeflate({
+        ...this.options.perMessageDeflate,
+        isServer: true,
+        maxPayload: this.options.maxPayload
+      });
 
       try {
         const offers = extension.parse(secWebSocketExtensions);
@@ -65164,6 +66449,8 @@ class WebSocketServer extends EventEmitter {
 
     ws.setSocket(socket, head, {
       allowSynchronousEvents: this.options.allowSynchronousEvents,
+      maxBufferedChunks: this.options.maxBufferedChunks,
+      maxFragments: this.options.maxFragments,
       maxPayload: this.options.maxPayload,
       skipUTF8Validation: this.options.skipUTF8Validation
     });
@@ -65503,6 +66790,10 @@ class WebSocket extends EventEmitter {
    *     multiple times in the same tick
    * @param {Function} [options.generateMask] The function used to generate the
    *     masking key
+   * @param {Number} [options.maxBufferedChunks=0] The maximum number of
+   *     buffered data chunks
+   * @param {Number} [options.maxFragments=0] The maximum number of message
+   *     fragments
    * @param {Number} [options.maxPayload=0] The maximum allowed message size
    * @param {Boolean} [options.skipUTF8Validation=false] Specifies whether or
    *     not to skip UTF-8 validation for text and close messages
@@ -65514,6 +66805,8 @@ class WebSocket extends EventEmitter {
       binaryType: this.binaryType,
       extensions: this._extensions,
       isServer: this._isServer,
+      maxBufferedChunks: options.maxBufferedChunks,
+      maxFragments: options.maxFragments,
       maxPayload: options.maxPayload,
       skipUTF8Validation: options.skipUTF8Validation
     });
@@ -65942,6 +67235,10 @@ module.exports = WebSocket;
  *     masking key
  * @param {Number} [options.handshakeTimeout] Timeout in milliseconds for the
  *     handshake request
+ * @param {Number} [options.maxBufferedChunks=262144] The maximum number of
+ *     buffered data chunks
+ * @param {Number} [options.maxFragments=16384] The maximum number of message
+ *     fragments
  * @param {Number} [options.maxPayload=104857600] The maximum allowed message
  *     size
  * @param {Number} [options.maxRedirects=10] The maximum number of redirects
@@ -65962,6 +67259,8 @@ function initAsClient(websocket, address, protocols, options) {
     autoPong: true,
     closeTimeout: CLOSE_TIMEOUT,
     protocolVersion: protocolVersions[1],
+    maxBufferedChunks: 256 * 1024,
+    maxFragments: 16 * 1024,
     maxPayload: 100 * 1024 * 1024,
     skipUTF8Validation: false,
     perMessageDeflate: true,
@@ -65995,7 +67294,7 @@ function initAsClient(websocket, address, protocols, options) {
   } else {
     try {
       parsedUrl = new URL(address);
-    } catch (e) {
+    } catch {
       throw new SyntaxError(`Invalid URL: ${address}`);
     }
   }
@@ -66057,11 +67356,11 @@ function initAsClient(websocket, address, protocols, options) {
   opts.timeout = opts.handshakeTimeout;
 
   if (opts.perMessageDeflate) {
-    perMessageDeflate = new PerMessageDeflate(
-      opts.perMessageDeflate !== true ? opts.perMessageDeflate : {},
-      false,
-      opts.maxPayload
-    );
+    perMessageDeflate = new PerMessageDeflate({
+      ...opts.perMessageDeflate,
+      isServer: false,
+      maxPayload: opts.maxPayload
+    });
     opts.headers['Sec-WebSocket-Extensions'] = format({
       [PerMessageDeflate.extensionName]: perMessageDeflate.offer()
     });
@@ -66319,6 +67618,8 @@ function initAsClient(websocket, address, protocols, options) {
     websocket.setSocket(socket, head, {
       allowSynchronousEvents: opts.allowSynchronousEvents,
       generateMask: opts.generateMask,
+      maxBufferedChunks: opts.maxBufferedChunks,
+      maxFragments: opts.maxFragments,
       maxPayload: opts.maxPayload,
       skipUTF8Validation: opts.skipUTF8Validation
     });
@@ -67151,27 +68452,45 @@ async function run() {
             ]
         });
         const page = await browser.newPage();
+        let css = "";
+        page.on('response', async (response) => {
+            if (response.request().resourceType() !== 'stylesheet')
+                return;
+            css += await response.text();
+        });
         await page.goto(website, { waitUntil: 'domcontentloaded' });
         core.info('Waiting for page to stabilize...');
         await waitForPageStable(page);
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const snapshotDir = path.join(process.cwd(), 'snapshots');
-        if (!fs.existsSync(snapshotDir)) {
-            fs.mkdirSync(snapshotDir, { recursive: true });
+        const pageTitle = await page.title();
+        // const snapshotDir = path.join(process.cwd(), 'snapshots');
+        const Rootdir = path.join(process.cwd(), 'sites');
+        if (!fs.existsSync(Rootdir)) {
+            fs.mkdirSync(Rootdir, { recursive: true });
         }
-        const filename = `snapshot-${timestamp}.png`;
-        const snapshotPath = path.join(snapshotDir, filename);
-        await page.screenshot({ path: snapshotPath, fullPage: true });
-        const viewport = page.viewport();
-        const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
+        const sourceDir = path.join(Rootdir, pageTitle);
+        if (!fs.existsSync(sourceDir)) {
+            fs.mkdirSync(sourceDir, { recursive: true });
+        }
+        // const filename = `snapshot-${timestamp}.png`;
+        const htmlFilename = `${pageTitle}-${timestamp}.html`;
+        const htmlPath = path.join(sourceDir, htmlFilename); // this was snapshotPath 
+        const html = await page.content();
+        const cssFilename = 'style.css';
+        const cssPath = path.join(sourceDir, cssFilename);
+        // await page.screenshot({ path: snapshotPath, fullPage: true });
+        fs.writeFileSync(htmlPath, html);
+        fs.writeFileSync(cssPath, css);
+        // const viewport = page.viewport();
+        // const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
         await browser.close();
         const time = new Date().toISOString();
-        core.setOutput('snapshot-path', snapshotPath);
+        core.setOutput('html-path', html);
         core.setOutput('time', time);
         core.setOutput('status', 'success');
-        core.setOutput('image-size', imageSize);
-        core.info(`Snapshot saved to: ${snapshotPath}`);
-        core.info(`Image size: ${imageSize}`);
+        // core.setOutput('image-size', imageSize);
+        // core.info(`Image size: ${imageSize}`);
+        core.info(`Snapshot saved to: ${htmlPath}`);
         core.info(`Status: success`);
     }
     catch (error) {
@@ -68873,7 +70192,7 @@ function isValidPlatform(platform) {
 }
 // If moved update release-please config
 // x-release-please-start-version
-const packageVersion = '2.13.0';
+const packageVersion = '2.13.2';
 // x-release-please-end
 /**
  * @public
@@ -71479,7 +72798,7 @@ async function runSetup(installedBrowser) {
                 return;
             }
             (0, node_child_process_1.spawnSync)(node_path_1.default.join(browserDir, 'setup.exe'), [`--configure-browser-in-directory=` + browserDir], {
-                shell: true,
+                shell: false,
             });
             // TODO: Handle error here. Currently the setup.exe sometimes
             // errors although it sets the permissions correctly.
@@ -87749,17 +89068,17 @@ class Browser extends EventEmitter_js_1.EventEmitter {
     }
     /** @internal */
     [disposable_js_1.disposeSymbol]() {
-        if (this.process()) {
-            return void this.close().catch(util_js_1.debugError);
-        }
-        return void this.disconnect().catch(util_js_1.debugError);
+        return void this[disposable_js_1.asyncDisposeSymbol]().catch(util_js_1.debugError);
     }
     /** @internal */
-    [disposable_js_1.asyncDisposeSymbol]() {
+    async [disposable_js_1.asyncDisposeSymbol]() {
         if (this.process()) {
-            return this.close();
+            await this.close();
         }
-        return this.disconnect();
+        else {
+            await this.disconnect();
+        }
+        await super[disposable_js_1.asyncDisposeSymbol]();
     }
 }
 exports.Browser = Browser;
@@ -87948,11 +89267,12 @@ class BrowserContext extends EventEmitter_js_1.EventEmitter {
     }
     /** @internal */
     [disposable_js_1.disposeSymbol]() {
-        return void this.close().catch(util_js_1.debugError);
+        return void this[disposable_js_1.asyncDisposeSymbol]().catch(util_js_1.debugError);
     }
     /** @internal */
-    [disposable_js_1.asyncDisposeSymbol]() {
-        return this.close();
+    async [disposable_js_1.asyncDisposeSymbol]() {
+        await this.close();
+        await super[disposable_js_1.asyncDisposeSymbol]();
     }
 }
 exports.BrowserContext = BrowserContext;
@@ -89619,6 +90939,101 @@ exports._isElementHandle = void 0;
  */
 exports._isElementHandle = Symbol('_isElementHandle');
 //# sourceMappingURL=ElementHandleSymbol.js.map
+
+/***/ }),
+
+/***/ 24481:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * @license
+ * Copyright 2026 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Extension = void 0;
+/**
+ * {@link Extension} represents a browser extension installed in the browser.
+ * It provides access to the extension's ID, name, and version, as well as
+ * methods for interacting with the extension's background workers and pages.
+ *
+ * @example
+ * To get all extensions installed in the browser:
+ *
+ * ```ts
+ * const extensions = await browser.extensions();
+ * for (const [id, extension] of extensions) {
+ *   console.log(extension.name, id);
+ * }
+ * ```
+ *
+ * @experimental
+ * @public
+ */
+class Extension {
+    #id;
+    #version;
+    #name;
+    #path;
+    #enabled;
+    /**
+     * @internal
+     */
+    constructor(id, version, name, path, enabled) {
+        if (!id || !version) {
+            throw new Error('Extension ID and version are required');
+        }
+        this.#id = id;
+        this.#version = version;
+        this.#name = name;
+        this.#path = path;
+        this.#enabled = enabled;
+    }
+    /**
+     * Whether the extension is enabled.
+     *
+     * @public
+     */
+    get enabled() {
+        return this.#enabled;
+    }
+    /**
+     * The path in the file system where the extension is located.
+     *
+     * @public
+     */
+    get path() {
+        return this.#path;
+    }
+    /**
+     * The version of the extension as specified in its manifest.
+     *
+     * @public
+     */
+    get version() {
+        return this.#version;
+    }
+    /**
+     * The name of the extension as specified in its manifest.
+     *
+     * @public
+     */
+    get name() {
+        return this.#name;
+    }
+    /**
+     * The unique identifier of the extension.
+     *
+     * @public
+     */
+    get id() {
+        return this.#id;
+    }
+}
+exports.Extension = Extension;
+//# sourceMappingURL=Extension.js.map
 
 /***/ }),
 
@@ -91524,7 +92939,7 @@ let JSHandle = (() => {
         }
         /** @internal */
         [(_getProperty_decorators = [(0, decorators_js_1.throwIfDisposed)()], _getProperties_decorators = [(0, decorators_js_1.throwIfDisposed)()], disposable_js_1.disposeSymbol)]() {
-            return void this.dispose().catch(util_js_1.debugError);
+            return void this[disposable_js_1.asyncDisposeSymbol]().catch(util_js_1.debugError);
         }
         /** @internal */
         [disposable_js_1.asyncDisposeSymbol]() {
@@ -92998,11 +94413,12 @@ let Page = (() => {
         [(_screenshot_decorators = [(0, decorators_js_1.guarded)(function () {
                 return this.browser();
             })], disposable_js_1.disposeSymbol)]() {
-            return void this.close().catch(util_js_1.debugError);
+            return void this[disposable_js_1.asyncDisposeSymbol]().catch(util_js_1.debugError);
         }
         /** @internal */
-        [disposable_js_1.asyncDisposeSymbol]() {
-            return this.close();
+        async [disposable_js_1.asyncDisposeSymbol]() {
+            await this.close();
+            await super[disposable_js_1.asyncDisposeSymbol]();
         }
     };
 })();
@@ -93075,14 +94491,41 @@ exports.Realm = void 0;
 const WaitTask_js_1 = __nccwpck_require__(66821);
 const disposable_js_1 = __nccwpck_require__(32608);
 /**
- * @internal
+ * @public
  */
 class Realm {
+    /** @internal */
     timeoutSettings;
+    /** @internal */
     taskManager = new WaitTask_js_1.TaskManager();
+    /** @internal */
     constructor(timeoutSettings) {
         this.timeoutSettings = timeoutSettings;
     }
+    /**
+     * Waits for a function to return a truthy value when evaluated in
+     * the realm's context.
+     *
+     * Arguments can be passed from Node.js to `pageFunction`.
+     *
+     * @example
+     *
+     * ```ts
+     * const selector = '.foo';
+     * await realm.waitForFunction(
+     *   selector => !!document.querySelector(selector),
+     *   {},
+     *   selector,
+     * );
+     * ```
+     *
+     * @param pageFunction - A function to evaluate in the realm.
+     * @param options - Options for polling and timeouts.
+     * @param args - Arguments to pass to the function.
+     * @returns A promise that resolves when the function returns a truthy
+     * value.
+     * @public
+     */
     async waitForFunction(pageFunction, options = {}, ...args) {
         const { polling = 'raf', timeout = this.timeoutSettings.timeout(), root, signal, } = options;
         if (typeof polling === 'number' && polling < 0) {
@@ -93096,6 +94539,7 @@ class Realm {
         }, pageFunction, ...args);
         return await waitTask.result;
     }
+    /** @internal */
     get disposed() {
         return this.#disposed;
     }
@@ -93186,11 +94630,25 @@ exports.Target = Target;
  * SPDX-License-Identifier: Apache-2.0
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.WebWorker = void 0;
+exports.WebWorker = exports.WebWorkerEvent = void 0;
 const Errors_js_1 = __nccwpck_require__(41938);
 const EventEmitter_js_1 = __nccwpck_require__(43951);
 const TimeoutSettings_js_1 = __nccwpck_require__(54147);
 const util_js_1 = __nccwpck_require__(37165);
+/**
+ * @public
+ */
+var WebWorkerEvent;
+(function (WebWorkerEvent) {
+    /**
+     * Emitted when the worker calls a console API.
+     */
+    WebWorkerEvent["Console"] = "console";
+    /**
+     * Emitted when the worker throws an exception.
+     */
+    WebWorkerEvent["Error"] = "error";
+})(WebWorkerEvent || (exports.WebWorkerEvent = WebWorkerEvent = {}));
 /**
  * This class represents a
  * {@link https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API | WebWorker}.
@@ -93323,6 +94781,7 @@ __exportStar(__nccwpck_require__(77409), exports);
 __exportStar(__nccwpck_require__(52129), exports);
 __exportStar(__nccwpck_require__(27526), exports);
 __exportStar(__nccwpck_require__(51174), exports);
+__exportStar(__nccwpck_require__(24481), exports);
 __exportStar(__nccwpck_require__(52821), exports);
 __exportStar(__nccwpck_require__(82393), exports);
 __exportStar(__nccwpck_require__(73245), exports);
@@ -93654,21 +95113,27 @@ class Locator extends EventEmitter_js_1.EventEmitter {
                     return 'typeable-input';
                 }
                 if (el instanceof HTMLInputElement) {
-                    if (new Set([
-                        'textarea',
-                        'text',
-                        'url',
-                        'tel',
-                        'search',
-                        'password',
-                        'number',
-                        'email',
-                    ]).has(el.type)) {
-                        return 'typeable-input';
+                    switch (el.type) {
+                        case 'checkbox':
+                        case 'radio':
+                            return 'checkable-input';
+                        case 'text':
+                        case 'url':
+                        case 'tel':
+                        case 'search':
+                        case 'password':
+                        case 'number':
+                        case 'email':
+                            return 'typeable-input';
+                        default:
+                            return 'other-input';
                     }
-                    else {
-                        return 'other-input';
-                    }
+                }
+                switch (el.getAttribute('role')) {
+                    case 'checkbox':
+                    case 'radio':
+                    case 'switch':
+                        return 'checkable-input';
                 }
                 if (el.isContentEditable) {
                     return 'contenteditable';
@@ -93680,45 +95145,68 @@ class Locator extends EventEmitter_js_1.EventEmitter {
                     return (0, rxjs_js_1.from)(handle.focus()).pipe((0, rxjs_js_1.mergeMap)(() => {
                         return (0, rxjs_js_1.from)(handle.evaluate((input, newValue) => {
                             const element = input;
+                            const valString = String(newValue);
                             const currentValue = element.isContentEditable
                                 ? element.innerText
                                 : element.value;
-                            if (currentValue === newValue) {
+                            if (currentValue === valString) {
                                 return;
                             }
                             if (element.isContentEditable) {
-                                element.innerText = newValue;
+                                element.innerText = valString;
                             }
                             else {
-                                element.value = newValue;
+                                element.value = valString;
                             }
                             element.dispatchEvent(new Event('input', { bubbles: true }));
                             element.dispatchEvent(new Event('change', { bubbles: true }));
                         }, value));
                     }));
                 };
+                const toggleIfNeeded = () => {
+                    return (0, rxjs_js_1.from)(handle.evaluate(toggleEl => {
+                        if (toggleEl.indeterminate ||
+                            toggleEl.getAttribute('aria-checked') === 'mixed') {
+                            return 'mixed';
+                        }
+                        return (toggleEl.checked ||
+                            toggleEl.getAttribute('aria-checked') === 'true');
+                    })).pipe((0, rxjs_js_1.mergeMap)(currentState => {
+                        if (currentState === 'mixed' || currentState !== !!value) {
+                            return (0, rxjs_js_1.from)(handle.click());
+                        }
+                        return (0, rxjs_js_1.of)(undefined);
+                    }));
+                };
                 switch (inputType) {
+                    case 'checkable-input':
+                        return toggleIfNeeded();
                     case 'select':
                         return (0, rxjs_js_1.from)(handle.select(value).then(rxjs_js_1.noop));
                     case 'contenteditable':
                     case 'typeable-input':
-                        if (value.length < typingThreshold) {
+                        if (typeof value === 'string' &&
+                            value.length < typingThreshold) {
                             return (0, rxjs_js_1.from)(handle.evaluate((input, newValue) => {
                                 const element = input;
+                                const valString = String(newValue);
                                 const currentValue = element.isContentEditable
                                     ? element.innerText
                                     : input.value;
+                                if (currentValue === valString) {
+                                    return '';
+                                }
                                 // Clear the input if the current value does not match the filled
                                 // out value.
-                                if (newValue.length <= currentValue.length ||
-                                    !newValue.startsWith(currentValue)) {
+                                if (!valString.startsWith(currentValue) ||
+                                    !currentValue) {
                                     if (element.isContentEditable) {
                                         element.innerText = '';
                                     }
                                     else {
                                         input.value = '';
                                     }
-                                    return newValue;
+                                    return valString;
                                 }
                                 // If the value is partially filled out, only type the rest. Move
                                 // cursor to the end of the common prefix.
@@ -93730,7 +95218,7 @@ class Locator extends EventEmitter_js_1.EventEmitter {
                                     input.value = '';
                                     input.value = currentValue;
                                 }
-                                return newValue.substring(currentValue.length);
+                                return valString.substring(currentValue.length);
                             }, value)).pipe((0, rxjs_js_1.mergeMap)(textToType => {
                                 if (!textToType) {
                                     return (0, rxjs_js_1.of)(undefined);
@@ -93876,7 +95364,8 @@ class Locator extends EventEmitter_js_1.EventEmitter {
      * Fills out the input identified by the locator using the provided value. The
      * type of the input is determined at runtime and the appropriate fill-out
      * method is chosen based on the type. `contenteditable`, select, textarea and
-     * input elements are supported.
+     * input elements are supported. For checkboxes, radio buttons and switches
+     * specify a boolean value.
      */
     fill(value, options) {
         return (0, rxjs_js_1.firstValueFrom)(this.#fill(value, options));
@@ -94520,6 +96009,7 @@ let BidiBrowser = (() => {
         #target = new Target_js_1.BidiBrowserTarget(this);
         #cdpConnection;
         #networkEnabled;
+        #issuesEnabled;
         constructor(browserCore, opts) {
             super();
             this.#process = opts.process;
@@ -94528,6 +96018,7 @@ let BidiBrowser = (() => {
             this.#defaultViewport = opts.defaultViewport;
             this.#cdpConnection = opts.cdpConnection;
             this.#networkEnabled = opts.networkEnabled;
+            this.#issuesEnabled = opts.issuesEnabled;
         }
         #initialize() {
             // Initializing existing contexts.
@@ -94698,6 +96189,12 @@ let BidiBrowser = (() => {
         isNetworkEnabled() {
             return this.#networkEnabled;
         }
+        extensions() {
+            throw new Errors_js_1.UnsupportedOperation();
+        }
+        isIssuesEnabled() {
+            return this.#issuesEnabled;
+        }
     };
 })();
 exports.BidiBrowser = BidiBrowser;
@@ -94763,7 +96260,7 @@ const incremental_id_generator_js_1 = __nccwpck_require__(8432);
  * @internal
  */
 async function _connectToBiDiBrowser(connectionTransport, url, options) {
-    const { acceptInsecureCerts = false, networkEnabled = true, defaultViewport = util_js_1.DEFAULT_VIEWPORT, } = options;
+    const { acceptInsecureCerts = false, networkEnabled = true, issuesEnabled = true, defaultViewport = util_js_1.DEFAULT_VIEWPORT, } = options;
     const { bidiConnection, cdpConnection, closeCallback } = await getBiDiConnection(connectionTransport, url, options);
     const BiDi = await Promise.resolve().then(() => __importStar(__nccwpck_require__(/* webpackIgnore: true */ 57034)));
     const bidiBrowser = await BiDi.BidiBrowser.create({
@@ -94774,6 +96271,7 @@ async function _connectToBiDiBrowser(connectionTransport, url, options) {
         defaultViewport: defaultViewport,
         acceptInsecureCerts: acceptInsecureCerts,
         networkEnabled,
+        issuesEnabled,
         capabilities: options.capabilities,
     });
     return bidiBrowser;
@@ -95062,6 +96560,12 @@ let BidiBrowserContext = (() => {
             return [...this.#targets.values()].flatMap(([target, frames]) => {
                 return [target, ...frames.values()];
             });
+        }
+        /**
+         * @internal
+         */
+        getTargetForPage(page) {
+            return this.#targets.get(page)?.[0];
         }
         async newPage(options) {
             const env_1 = { stack: [], error: void 0, hasError: false };
@@ -95861,6 +97365,7 @@ let BidiElementHandle = (() => {
                 fieldId,
                 frameId,
                 card: data.creditCard,
+                address: data.address,
             });
         }
         async contentFrame() {
@@ -96265,34 +97770,17 @@ exports.BidiFrame = void 0;
 const rxjs_js_1 = __nccwpck_require__(43836);
 const Frame_js_1 = __nccwpck_require__(52821);
 const Accessibility_js_1 = __nccwpck_require__(82765);
-const ConsoleMessage_js_1 = __nccwpck_require__(60801);
 const Errors_js_1 = __nccwpck_require__(41938);
 const util_js_1 = __nccwpck_require__(37165);
 const ErrorLike_js_1 = __nccwpck_require__(5621);
 const CDPSession_js_1 = __nccwpck_require__(96067);
-const Deserializer_js_1 = __nccwpck_require__(64663);
 const Dialog_js_1 = __nccwpck_require__(4336);
 const ElementHandle_js_1 = __nccwpck_require__(94236);
 const ExposedFunction_js_1 = __nccwpck_require__(13398);
 const HTTPRequest_js_1 = __nccwpck_require__(55463);
-const JSHandle_js_1 = __nccwpck_require__(1949);
 const Realm_js_1 = __nccwpck_require__(61445);
 const util_js_2 = __nccwpck_require__(37592);
 const WebWorker_js_1 = __nccwpck_require__(36126);
-// TODO: Remove this and map CDP the correct method.
-// Requires breaking change.
-function convertConsoleMessageLevel(method) {
-    switch (method) {
-        case 'group':
-            return 'startGroup';
-        case 'groupCollapsed':
-            return 'startGroupCollapsed';
-        case 'groupEnd':
-            return 'endGroup';
-        default:
-            return method;
-    }
-}
 let BidiFrame = (() => {
     var _a;
     let _classSuper = Frame_js_1.Frame;
@@ -96450,21 +97938,16 @@ let BidiFrame = (() => {
                 if (this._id !== entry.source.context) {
                     return;
                 }
-                if (isConsoleLogEntry(entry)) {
+                if ((0, util_js_2.isConsoleLogEntry)(entry)) {
+                    if (!this.page().listenerCount("console" /* PageEvent.Console */)) {
+                        return;
+                    }
                     const args = entry.args.map(arg => {
                         return this.mainRealm().createHandle(arg);
                     });
-                    const text = args
-                        .reduce((value, arg) => {
-                        const parsedValue = arg instanceof JSHandle_js_1.BidiJSHandle && arg.isPrimitiveValue
-                            ? Deserializer_js_1.BidiDeserializer.deserialize(arg.remoteValue())
-                            : arg.toString();
-                        return `${value} ${parsedValue}`;
-                    }, '')
-                        .slice(1);
-                    this.page().trustedEmitter.emit("console" /* PageEvent.Console */, new ConsoleMessage_js_1.ConsoleMessage(convertConsoleMessageLevel(entry.method), text, args, getStackTraceLocations(entry.stackTrace), this, undefined));
+                    this.page().trustedEmitter.emit("console" /* PageEvent.Console */, (0, util_js_2.getConsoleMessage)(entry, args, this));
                 }
-                else if (isJavaScriptLogEntry(entry)) {
+                else if ((0, util_js_2.isJavaScriptLogEntry)(entry)) {
                     const error = new Error(entry.text ?? '');
                     const messageHeight = error.message.split('\n').length;
                     const messageLines = error.stack.split('\n').splice(0, messageHeight);
@@ -96703,28 +98186,12 @@ let BidiFrame = (() => {
             // SAFETY: ElementHandles are always remote references.
             [element.remoteValue()]);
         }
+        extensionRealms() {
+            throw new Errors_js_1.UnsupportedOperation();
+        }
     };
 })();
 exports.BidiFrame = BidiFrame;
-function isConsoleLogEntry(event) {
-    return event.type === 'console';
-}
-function isJavaScriptLogEntry(event) {
-    return event.type === 'javascript';
-}
-function getStackTraceLocations(stackTrace) {
-    const stackTraceLocations = [];
-    if (stackTrace) {
-        for (const callFrame of stackTrace.callFrames) {
-            stackTraceLocations.push({
-                url: callFrame.url,
-                lineNumber: callFrame.lineNumber,
-                columnNumber: callFrame.columnNumber,
-            });
-        }
-    }
-    return stackTraceLocations;
-}
 //# sourceMappingURL=Frame.js.map
 
 /***/ }),
@@ -97800,7 +99267,6 @@ class BidiTouchscreen extends Input_js_1.Touchscreen {
             width: 0.5 * 2, // 2 times default touch radius.
             height: 0.5 * 2, // 2 times default touch radius.
             pressure: 0.5,
-            altitudeAngle: Math.PI / 2,
         };
         const touch = new BidiTouchHandle(this.#page, this, id, x, y, properties);
         await touch.start(options);
@@ -98048,6 +99514,9 @@ let BidiPage = (() => {
         mouse;
         touchscreen;
         tracing;
+        get webmcp() {
+            throw new Errors_js_1.UnsupportedOperation();
+        }
         coverage;
         #cdpEmulationManager;
         #emulatedNetworkConditions;
@@ -98135,6 +99604,9 @@ let BidiPage = (() => {
         mainFrame() {
             return this.#frame;
         }
+        async triggerExtensionAction(_extension) {
+            throw new Errors_js_1.UnsupportedOperation();
+        }
         async emulateFocusedPage(enabled) {
             return await this.#cdpEmulationManager.emulateFocus(enabled);
         }
@@ -98145,6 +99617,9 @@ let BidiPage = (() => {
             return this.#frame.browsingContext.windowId;
         }
         openDevTools() {
+            throw new Errors_js_1.UnsupportedOperation();
+        }
+        hasDevTools() {
             throw new Errors_js_1.UnsupportedOperation();
         }
         async focusedFrame() {
@@ -98468,7 +99943,11 @@ let BidiPage = (() => {
             throw new Errors_js_1.UnsupportedOperation();
         }
         target() {
-            throw new Errors_js_1.UnsupportedOperation();
+            const target = this.browserContext().getTargetForPage(this);
+            if (!target) {
+                throw new Error('Target not found for page');
+            }
+            return target;
         }
         async waitForFileChooser(options = {}) {
             const { timeout = this._timeoutSettings.timeout() } = options;
@@ -98704,6 +100183,9 @@ let BidiPage = (() => {
         get bluetooth() {
             return this.mainFrame().browsingContext.bluetooth;
         }
+        extensionRealms() {
+            throw new Errors_js_1.UnsupportedOperation();
+        }
     };
 })();
 exports.BidiPage = BidiPage;
@@ -98932,10 +100414,12 @@ var __disposeResources = (this && this.__disposeResources) || (function (Suppres
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.BidiWorkerRealm = exports.BidiFrameRealm = exports.BidiRealm = void 0;
 const Realm_js_1 = __nccwpck_require__(92883);
+const WebWorker_js_1 = __nccwpck_require__(72612);
 const AriaQueryHandler_js_1 = __nccwpck_require__(79928);
 const LazyArg_js_1 = __nccwpck_require__(73543);
 const ScriptInjector_js_1 = __nccwpck_require__(37466);
 const util_js_1 = __nccwpck_require__(37165);
+const index_browser_js_1 = __nccwpck_require__(40222);
 const AsyncIterableUtil_js_1 = __nccwpck_require__(17794);
 const Function_js_1 = __nccwpck_require__(92330);
 const Deserializer_js_1 = __nccwpck_require__(64663);
@@ -99030,7 +100514,7 @@ class BidiRealm extends Realm_js_1.Realm {
                 serializationOptions,
             });
         }
-        const result = await responsePromise;
+        const result = await responsePromise.catch(util_js_2.rewriteEvaluationError);
         if ('type' in result && result.type === 'exception') {
             throw (0, util_js_2.createEvaluationError)(result.exceptionDetails);
         }
@@ -99102,6 +100586,12 @@ class BidiRealm extends Realm_js_1.Realm {
         const transferredHandle = this.adoptHandle(handle);
         await handle.dispose();
         return await transferredHandle;
+    }
+    extension() {
+        throw new index_browser_js_1.UnsupportedOperation();
+    }
+    get origin() {
+        throw new index_browser_js_1.UnsupportedOperation();
     }
 }
 exports.BidiRealm = BidiRealm;
@@ -99191,6 +100681,19 @@ class BidiWorkerRealm extends BidiRealm {
     constructor(realm, frame) {
         super(realm, frame.timeoutSettings);
         this.#worker = frame;
+    }
+    initialize() {
+        super.initialize();
+        this.realm.on('log', entry => {
+            if ((0, util_js_2.isConsoleLogEntry)(entry) &&
+                this.#worker.listenerCount(WebWorker_js_1.WebWorkerEvent.Console)) {
+                const args = entry.args.map(arg => {
+                    return this.createHandle(arg);
+                });
+                const message = (0, util_js_2.getConsoleMessage)(entry, args, undefined, this.realm.id);
+                this.#worker.emit(WebWorker_js_1.WebWorkerEvent.Console, message);
+            }
+        });
     }
     get environment() {
         return this.#worker;
@@ -99396,7 +100899,7 @@ class BidiPageTarget extends Target_js_1.Target {
         return this.#page;
     }
     async asPage() {
-        return Page_js_1.BidiPage.from(this.browserContext(), this.#page.mainFrame().browsingContext);
+        return await this.page();
     }
     url() {
         return this.#page.url();
@@ -99435,7 +100938,7 @@ class BidiFrameTarget extends Target_js_1.Target {
         return this.#page;
     }
     async asPage() {
-        return Page_js_1.BidiPage.from(this.browserContext(), this.#frame.browsingContext);
+        return await this.page();
     }
     url() {
         return this.#frame.url();
@@ -100701,6 +102204,7 @@ let Navigation = (() => {
             for (const eventName of [
                 'browsingContext.domContentLoaded',
                 'browsingContext.load',
+                'browsingContext.navigationCommitted',
             ]) {
                 sessionEmitter.on(eventName, info => {
                     if (info.context !== this.#browsingContext.id ||
@@ -100961,6 +102465,12 @@ class WindowRealm extends Realm {
             });
             this.emit('worker', realm);
         });
+        sessionEmitter.on('log.entryAdded', entry => {
+            if (entry.source.realm !== this.id) {
+                return;
+            }
+            this.emit('log', entry);
+        });
     }
     get session() {
         return this.browsingContext.userContext.browser.session;
@@ -101008,6 +102518,12 @@ class DedicatedWorkerRealm extends Realm {
             });
             this.emit('worker', realm);
         });
+        sessionEmitter.on('log.entryAdded', entry => {
+            if (entry.source.realm !== this.id) {
+                return;
+            }
+            this.emit('log', entry);
+        });
     }
     get session() {
         // SAFETY: At least one owner will exist.
@@ -101053,6 +102569,12 @@ class SharedWorkerRealm extends Realm {
                 this.#workers.delete(realm.id);
             });
             this.emit('worker', realm);
+        });
+        sessionEmitter.on('log.entryAdded', entry => {
+            if (entry.source.realm !== this.id) {
+                return;
+            }
+            this.emit('log', entry);
         });
     }
     get session() {
@@ -101940,11 +103462,79 @@ exports.UserPrompt = UserPrompt;
  * SPDX-License-Identifier: Apache-2.0
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.convertConsoleMessageLevel = convertConsoleMessageLevel;
+exports.getStackTraceLocations = getStackTraceLocations;
+exports.getConsoleMessage = getConsoleMessage;
+exports.isConsoleLogEntry = isConsoleLogEntry;
+exports.isJavaScriptLogEntry = isJavaScriptLogEntry;
 exports.createEvaluationError = createEvaluationError;
 exports.rewriteNavigationError = rewriteNavigationError;
+exports.rewriteEvaluationError = rewriteEvaluationError;
+const ConsoleMessage_js_1 = __nccwpck_require__(60801);
 const Errors_js_1 = __nccwpck_require__(41938);
 const util_js_1 = __nccwpck_require__(37165);
 const Deserializer_js_1 = __nccwpck_require__(64663);
+const JSHandle_js_1 = __nccwpck_require__(1949);
+/**
+ * @internal
+ *
+ * TODO: Remove this and map CDP the correct method.
+ * Requires breaking change.
+ */
+function convertConsoleMessageLevel(method) {
+    switch (method) {
+        case 'group':
+            return 'startGroup';
+        case 'groupCollapsed':
+            return 'startGroupCollapsed';
+        case 'groupEnd':
+            return 'endGroup';
+        default:
+            return method;
+    }
+}
+/**
+ * @internal
+ */
+function getStackTraceLocations(stackTrace) {
+    const stackTraceLocations = [];
+    if (stackTrace) {
+        for (const callFrame of stackTrace.callFrames) {
+            stackTraceLocations.push({
+                url: callFrame.url,
+                lineNumber: callFrame.lineNumber,
+                columnNumber: callFrame.columnNumber,
+            });
+        }
+    }
+    return stackTraceLocations;
+}
+/**
+ * @internal
+ */
+function getConsoleMessage(entry, args, frame, targetId) {
+    const text = args
+        .reduce((value, arg) => {
+        const parsedValue = arg instanceof JSHandle_js_1.BidiJSHandle && arg.isPrimitiveValue
+            ? Deserializer_js_1.BidiDeserializer.deserialize(arg.remoteValue())
+            : arg.toString();
+        return `${value} ${parsedValue}`;
+    }, '')
+        .slice(1);
+    return new ConsoleMessage_js_1.ConsoleMessage(convertConsoleMessageLevel(entry.method), text, args, getStackTraceLocations(entry.stackTrace), frame, undefined, targetId);
+}
+/**
+ * @internal
+ */
+function isConsoleLogEntry(event) {
+    return event.type === 'console';
+}
+/**
+ * @internal
+ */
+function isJavaScriptLogEntry(event) {
+    return event.type === 'javascript';
+}
 /**
  * @internal
  */
@@ -101996,6 +103586,18 @@ function rewriteNavigationError(message, ms) {
         }
         throw error;
     };
+}
+/**
+ * @internal
+ */
+function rewriteEvaluationError(error) {
+    if (error instanceof Error) {
+        if (error.message.includes('ExecutionContext was destroyed') ||
+            error.message.includes('Inspected target navigated or closed')) {
+            throw new Error('Execution context was destroyed, most likely because of a navigation.');
+        }
+    }
+    throw error;
 }
 //# sourceMappingURL=util.js.map
 
@@ -102828,6 +104430,7 @@ exports.CdpBrowser = void 0;
 const Browser_js_1 = __nccwpck_require__(66160);
 const CDPSession_js_1 = __nccwpck_require__(77409);
 const BrowserContext_js_1 = __nccwpck_require__(99818);
+const Extension_js_1 = __nccwpck_require__(45744);
 const Target_js_1 = __nccwpck_require__(95768);
 const TargetManager_js_1 = __nccwpck_require__(7581);
 /**
@@ -102841,8 +104444,15 @@ function isDevToolsPageTarget(url) {
  */
 class CdpBrowser extends Browser_js_1.Browser {
     protocol = 'cdp';
-    static async _create(connection, contextIds, acceptInsecureCerts, defaultViewport, downloadBehavior, process, closeCallback, targetFilterCallback, isPageTargetCallback, waitForInitiallyDiscoveredTargets = true, networkEnabled = true, handleDevToolsAsPage = false) {
-        const browser = new CdpBrowser(connection, contextIds, defaultViewport, process, closeCallback, targetFilterCallback, isPageTargetCallback, waitForInitiallyDiscoveredTargets, networkEnabled, handleDevToolsAsPage);
+    static async _create(connection, contextIds, acceptInsecureCerts, defaultViewport, downloadBehavior, process, closeCallback, targetFilterCallback, isPageTargetCallback, waitForInitiallyDiscoveredTargets = true, networkEnabled = true, issuesEnabled = true, handleDevToolsAsPage = false, blocklist, allowlist) {
+        const browser = new CdpBrowser(connection, contextIds, defaultViewport, process, closeCallback, targetFilterCallback, isPageTargetCallback, waitForInitiallyDiscoveredTargets, networkEnabled, issuesEnabled, handleDevToolsAsPage, blocklist, allowlist);
+        if (allowlist) {
+            const version = await browser.#getVersion();
+            const majorVersion = parseInt(version.product.match(/\d+/)?.[0] ?? '0', 10);
+            if (majorVersion < 149) {
+                throw new Error('The allowlist option require Chrome 149 or greater.');
+            }
+        }
         if (acceptInsecureCerts) {
             await connection.send('Security.setIgnoreCertificateErrors', {
                 ignore: true,
@@ -102860,11 +104470,14 @@ class CdpBrowser extends Browser_js_1.Browser {
     #defaultContext;
     #contexts = new Map();
     #networkEnabled = true;
+    #issuesEnabled = true;
     #targetManager;
     #handleDevToolsAsPage = false;
-    constructor(connection, contextIds, defaultViewport, process, closeCallback, targetFilterCallback, isPageTargetCallback, waitForInitiallyDiscoveredTargets = true, networkEnabled = true, handleDevToolsAsPage = false) {
+    #extensions = new Map();
+    constructor(connection, contextIds, defaultViewport, process, closeCallback, targetFilterCallback, isPageTargetCallback, waitForInitiallyDiscoveredTargets = true, networkEnabled = true, issuesEnabled = true, handleDevToolsAsPage = false, blocklist, allowlist) {
         super();
         this.#networkEnabled = networkEnabled;
+        this.#issuesEnabled = issuesEnabled;
         this.#defaultViewport = defaultViewport;
         this.#process = process;
         this.#connection = connection;
@@ -102876,7 +104489,7 @@ class CdpBrowser extends Browser_js_1.Browser {
                 });
         this.#handleDevToolsAsPage = handleDevToolsAsPage;
         this.#setIsPageTargetCallback(isPageTargetCallback);
-        this.#targetManager = new TargetManager_js_1.TargetManager(connection, this.#createTarget, this.#targetFilterCallback, waitForInitiallyDiscoveredTargets);
+        this.#targetManager = new TargetManager_js_1.TargetManager(connection, this.#createTarget, this.#targetFilterCallback, waitForInitiallyDiscoveredTargets, blocklist, allowlist);
         this.#defaultContext = new BrowserContext_js_1.CdpBrowserContext(this.#connection, this);
         for (const contextId of contextIds) {
             this.#contexts.set(contextId, new BrowserContext_js_1.CdpBrowserContext(this.#connection, this, contextId));
@@ -103045,29 +104658,61 @@ class CdpBrowser extends Browser_js_1.Browser {
         const openDevToolsResponse = await this.#connection.send('Target.openDevTools', {
             targetId: pageTargetId,
         });
+        return await this._getDevToolsTargetPage(openDevToolsResponse.targetId);
+    }
+    async _getDevToolsTargetPage(devtoolsTargetId) {
         const target = (await this.waitForTarget(t => {
-            return t._targetId === openDevToolsResponse.targetId;
+            return t._targetId === devtoolsTargetId;
         }));
         if (!target) {
-            throw new Error(`Missing target for DevTools page (id = ${pageTargetId})`);
+            throw new Error(`Missing target for DevTools page (id = ${devtoolsTargetId})`);
         }
         const initialized = (await target._initializedDeferred.valueOrThrow()) ===
             Target_js_1.InitializationStatus.SUCCESS;
         if (!initialized) {
-            throw new Error(`Failed to create target for DevTools page (id = ${pageTargetId})`);
+            throw new Error(`Failed to create target for DevTools page (id = ${devtoolsTargetId})`);
         }
         const page = await target.page();
         if (!page) {
-            throw new Error(`Failed to create a DevTools Page for target (id = ${pageTargetId})`);
+            throw new Error(`Failed to create a DevTools Page for target (id = ${devtoolsTargetId})`);
         }
         return page;
     }
+    async _hasDevToolsTarget(pageTargetId) {
+        const response = await this.#connection.send('Target.getDevToolsTarget', {
+            targetId: pageTargetId,
+        });
+        return response.targetId;
+    }
     async installExtension(path) {
         const { id } = await this.#connection.send('Extensions.loadUnpacked', { path });
+        this.#extensions.delete(id);
         return id;
     }
-    uninstallExtension(id) {
-        return this.#connection.send('Extensions.uninstall', { id });
+    async uninstallExtension(id) {
+        await this.#connection.send('Extensions.uninstall', { id });
+        // Currently sending the Extensions.uninstall command does not trigger
+        // the Target.targetDestroyed event for service workers. This causes
+        // flakiness in the extension tests.
+        // TODO(nroscino): Remove this once the event is correctly emitted.
+        const targetDestroyedPromises = [];
+        for (const [targetId, targetInfo] of this._targetManager()
+            .getDiscoveredTargetInfos()
+            .entries()) {
+            if (targetInfo.url.includes(id) && targetInfo.type === 'service_worker') {
+                this._targetManager().addToIgnoreTarget(targetId);
+                targetDestroyedPromises.push(new Promise(resolve => {
+                    return setTimeout(() => {
+                        this.#connection.emit('Target.targetDestroyed', {
+                            targetId: targetId,
+                        });
+                        resolve(null);
+                    }, 0);
+                }));
+            }
+        }
+        await Promise.all(targetDestroyedPromises);
+        this.#extensions.delete(id);
     }
     async screens() {
         const { screenInfos } = await this.#connection.send('Emulation.getScreenInfos');
@@ -103125,6 +104770,12 @@ class CdpBrowser extends Browser_js_1.Browser {
         this._detach();
         return Promise.resolve();
     }
+    /**
+     * @internal
+     */
+    get _connection() {
+        return this.#connection;
+    }
     get connected() {
         return !this.#connection._closed;
     }
@@ -103138,6 +104789,24 @@ class CdpBrowser extends Browser_js_1.Browser {
     }
     isNetworkEnabled() {
         return this.#networkEnabled;
+    }
+    async extensions() {
+        const response = await this.#connection.send('Extensions.getExtensions');
+        const extensionsMap = new Map();
+        for (const currExtension of response.extensions) {
+            if (this.#extensions.has(currExtension.id)) {
+                extensionsMap.set(currExtension.id, this.#extensions.get(currExtension.id));
+            }
+            else {
+                const newExtension = new Extension_js_1.CdpExtension(currExtension.id, currExtension.version, currExtension.name, currExtension.path, currExtension.enabled, this);
+                extensionsMap.set(currExtension.id, newExtension);
+            }
+        }
+        this.#extensions = extensionsMap;
+        return this.#extensions;
+    }
+    isIssuesEnabled() {
+        return this.#issuesEnabled;
     }
 }
 exports.CdpBrowser = CdpBrowser;
@@ -103168,13 +104837,13 @@ const Connection_js_1 = __nccwpck_require__(5129);
  * @internal
  */
 async function _connectToCdpBrowser(connectionTransport, url, options) {
-    const { acceptInsecureCerts = false, networkEnabled = true, defaultViewport = util_js_1.DEFAULT_VIEWPORT, downloadBehavior, targetFilter, _isPageTarget: isPageTarget, slowMo = 0, protocolTimeout, handleDevToolsAsPage, idGenerator = (0, incremental_id_generator_js_1.createIncrementalIdGenerator)(), } = options;
+    const { acceptInsecureCerts = false, networkEnabled = true, issuesEnabled = true, defaultViewport = util_js_1.DEFAULT_VIEWPORT, downloadBehavior, targetFilter, _isPageTarget: isPageTarget, slowMo = 0, protocolTimeout, handleDevToolsAsPage, idGenerator = (0, incremental_id_generator_js_1.createIncrementalIdGenerator)(), blocklist, allowlist, } = options;
     const connection = new Connection_js_1.Connection(url, connectionTransport, slowMo, protocolTimeout, 
     /* rawErrors */ false, idGenerator);
     const { browserContextIds } = await connection.send('Target.getBrowserContexts');
     const browser = await Browser_js_1.CdpBrowser._create(connection, browserContextIds, acceptInsecureCerts, defaultViewport, downloadBehavior, undefined, () => {
         return connection.send('Browser.close').catch(util_js_1.debugError);
-    }, targetFilter, isPageTarget, undefined, networkEnabled, handleDevToolsAsPage);
+    }, targetFilter, isPageTarget, undefined, networkEnabled, issuesEnabled, handleDevToolsAsPage, blocklist, allowlist);
     return browser;
 }
 //# sourceMappingURL=BrowserConnector.js.map
@@ -103355,7 +105024,7 @@ class CdpBrowserContext extends BrowserContext_js_1.BrowserContext {
                     }
                     : undefined,
                 // TODO: remove sameParty as it is removed from Chrome.
-                sameParty: cookie.sameParty ?? false,
+                sameParty: false,
             };
         });
     }
@@ -103381,6 +105050,40 @@ class CdpBrowserContext extends BrowserContext_js_1.BrowserContext {
 }
 exports.CdpBrowserContext = CdpBrowserContext;
 //# sourceMappingURL=BrowserContext.js.map
+
+/***/ }),
+
+/***/ 40977:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * @license
+ * Copyright 2026 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CdpIssue = void 0;
+/**
+ * @internal
+ */
+class CdpIssue {
+    #code;
+    #details;
+    constructor(issue) {
+        this.#code = issue.code;
+        this.#details = issue.details;
+    }
+    get code() {
+        return this.#code;
+    }
+    get details() {
+        return this.#details;
+    }
+}
+exports.CdpIssue = CdpIssue;
+//# sourceMappingURL=CdpIssue.js.map
 
 /***/ }),
 
@@ -104587,6 +106290,7 @@ let CdpElementHandle = (() => {
                 fieldId,
                 frameId,
                 card: data.creditCard,
+                address: data.address,
             });
         }
         async *queryAXTree(name, role) {
@@ -105545,6 +107249,7 @@ class ExecutionContext extends EventEmitter_js_1.EventEmitter {
     [disposable_js_1.disposeSymbol]() {
         this.#disposables.dispose();
         this.emit('disposed', undefined);
+        super[disposable_js_1.disposeSymbol]();
     }
 }
 exports.ExecutionContext = ExecutionContext;
@@ -105562,6 +107267,92 @@ const rewriteError = (error) => {
     throw error;
 };
 //# sourceMappingURL=ExecutionContext.js.map
+
+/***/ }),
+
+/***/ 45744:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CdpExtension = void 0;
+const api_js_1 = __nccwpck_require__(84296);
+const util_js_1 = __nccwpck_require__(37165);
+const ErrorLike_js_1 = __nccwpck_require__(5621);
+const Connection_js_1 = __nccwpck_require__(5129);
+class CdpExtension extends api_js_1.Extension {
+    // needed to access the CDPSession to trigger an extension action.
+    #browser;
+    /*
+     * @internal
+     */
+    constructor(id, version, name, path, enabled, browser) {
+        super(id, version, name, path, enabled);
+        this.#browser = browser;
+    }
+    async workers() {
+        const targets = this.#browser.targets();
+        const extensionWorkers = targets.filter((target) => {
+            const targetUrl = target.url();
+            return (target.type() === 'service_worker' &&
+                targetUrl.startsWith('chrome-extension://' + this.id));
+        });
+        const workers = [];
+        for (const target of extensionWorkers) {
+            try {
+                const worker = await target.worker();
+                if (worker) {
+                    workers.push(worker);
+                }
+            }
+            catch (err) {
+                if (this.#canIgnoreError(err)) {
+                    (0, util_js_1.debugError)(err);
+                    continue;
+                }
+                throw err;
+            }
+        }
+        return workers;
+    }
+    async pages() {
+        const targets = this.#browser.targets();
+        const extensionPages = targets.filter((target) => {
+            const targetUrl = target.url();
+            return ((target.type() === 'page' || target.type() === 'background_page') &&
+                targetUrl.startsWith('chrome-extension://' + this.id));
+        });
+        const pages = await Promise.all(extensionPages.map(async (target) => {
+            try {
+                return await target.asPage();
+            }
+            catch (err) {
+                if (this.#canIgnoreError(err)) {
+                    (0, util_js_1.debugError)(err);
+                    return null;
+                }
+                throw err;
+            }
+        }));
+        return pages.filter((page) => {
+            return page !== null;
+        });
+    }
+    async triggerAction(page) {
+        await this.#browser._connection.send('Extensions.triggerAction', {
+            id: this.id,
+            targetId: page._tabId,
+        });
+    }
+    #canIgnoreError(error) {
+        return ((0, ErrorLike_js_1.isErrorLike)(error) &&
+            ((0, Connection_js_1.isTargetClosedError)(error) ||
+                error.message.includes('No target with given id found')));
+    }
+}
+exports.CdpExtension = CdpExtension;
+//# sourceMappingURL=Extension.js.map
 
 /***/ }),
 
@@ -105845,6 +107636,7 @@ let CdpFrame = (() => {
         _parentId;
         accessibility;
         worlds;
+        extensionWorlds = {};
         constructor(frameManager, frameId, parentFrameId, client) {
             super();
             this._frameManager = frameManager;
@@ -105855,8 +107647,8 @@ let CdpFrame = (() => {
             this.#client = client;
             this._loaderId = '';
             this.worlds = {
-                [IsolatedWorlds_js_1.MAIN_WORLD]: new IsolatedWorld_js_1.IsolatedWorld(this, this._frameManager.timeoutSettings),
-                [IsolatedWorlds_js_1.PUPPETEER_WORLD]: new IsolatedWorld_js_1.IsolatedWorld(this, this._frameManager.timeoutSettings),
+                [IsolatedWorlds_js_1.MAIN_WORLD]: new IsolatedWorld_js_1.IsolatedWorld(this, this._frameManager.timeoutSettings, IsolatedWorlds_js_1.MAIN_WORLD),
+                [IsolatedWorlds_js_1.PUPPETEER_WORLD]: new IsolatedWorld_js_1.IsolatedWorld(this, this._frameManager.timeoutSettings, IsolatedWorlds_js_1.PUPPETEER_WORLD),
             };
             this.accessibility = new Accessibility_js_1.Accessibility(this.worlds[IsolatedWorlds_js_1.MAIN_WORLD], frameId);
             this.on(Frame_js_1.FrameEvent.FrameSwappedByActivation, () => {
@@ -105864,20 +107656,21 @@ let CdpFrame = (() => {
                 this._onLoadingStarted();
                 this._onLoadingStopped();
             });
-            this.worlds[IsolatedWorlds_js_1.MAIN_WORLD].emitter.on('consoleapicalled', this.#onMainWorldConsoleApiCalled.bind(this));
-            this.worlds[IsolatedWorlds_js_1.MAIN_WORLD].emitter.on('bindingcalled', this.#onMainWorldBindingCalled.bind(this));
+            this.registerWorldListeners(this.worlds[IsolatedWorlds_js_1.MAIN_WORLD]);
         }
-        #onMainWorldConsoleApiCalled(event) {
-            this._frameManager.emit(FrameManagerEvents_js_1.FrameManagerEvent.ConsoleApiCalled, [
-                this.worlds[IsolatedWorlds_js_1.MAIN_WORLD],
-                event,
-            ]);
-        }
-        #onMainWorldBindingCalled(event) {
-            this._frameManager.emit(FrameManagerEvents_js_1.FrameManagerEvent.BindingCalled, [
-                this.worlds[IsolatedWorlds_js_1.MAIN_WORLD],
-                event,
-            ]);
+        /**
+         * @internal
+         */
+        registerWorldListeners(world) {
+            world.emitter.on('consoleapicalled', event => {
+                this._frameManager.emit(FrameManagerEvents_js_1.FrameManagerEvent.ConsoleApiCalled, [
+                    world,
+                    event,
+                ]);
+            });
+            world.emitter.on('bindingcalled', event => {
+                this._frameManager.emit(FrameManagerEvents_js_1.FrameManagerEvent.BindingCalled, [world, event]);
+            });
         }
         /**
          * This is used internally in DevTools.
@@ -105901,6 +107694,9 @@ let CdpFrame = (() => {
             return this._frameManager.page();
         }
         async goto(url, options = {}) {
+            if (!this.page()._isUrlAllowed(url)) {
+                throw new Error(`Navigation to ${url} is blocked by blocklist/allowlist rules`);
+            }
             const { referer = this._frameManager.networkManager.extraHTTPHeaders()['referer'], referrerPolicy = this._frameManager.networkManager.extraHTTPHeaders()['referer-policy'], waitUntil = ['load'], timeout = this._frameManager.timeoutSettings.navigationTimeout(), } = options;
             let ensureNewDocumentNavigation = false;
             const watcher = new LifecycleWatcher_js_1.LifecycleWatcher(this._frameManager.networkManager, this, waitUntil, timeout);
@@ -106086,6 +107882,10 @@ let CdpFrame = (() => {
             this.#detached = true;
             this.worlds[IsolatedWorlds_js_1.MAIN_WORLD][disposable_js_1.disposeSymbol]();
             this.worlds[IsolatedWorlds_js_1.PUPPETEER_WORLD][disposable_js_1.disposeSymbol]();
+            for (const extensionWorld of Object.values(this.extensionWorlds)) {
+                extensionWorld[disposable_js_1.disposeSymbol]();
+            }
+            super[disposable_js_1.disposeSymbol]();
         }
         exposeFunction() {
             throw new Errors_js_1.UnsupportedOperation();
@@ -106101,6 +107901,12 @@ let CdpFrame = (() => {
             return (await parent
                 .mainRealm()
                 .adoptBackendNode(backendNodeId));
+        }
+        /**
+         * @public
+         */
+        extensionRealms() {
+            return Object.values(this.extensionWorlds);
         }
     };
 })();
@@ -106140,6 +107946,7 @@ const assert_js_1 = __nccwpck_require__(90680);
 const Deferred_js_1 = __nccwpck_require__(15157);
 const disposable_js_1 = __nccwpck_require__(32608);
 const ErrorLike_js_1 = __nccwpck_require__(5621);
+const CdpIssue_js_1 = __nccwpck_require__(40977);
 const CdpPreloadScript_js_1 = __nccwpck_require__(37852);
 const Connection_js_1 = __nccwpck_require__(5129);
 const DeviceRequestPrompt_js_1 = __nccwpck_require__(41720);
@@ -106147,9 +107954,11 @@ const ExecutionContext_js_1 = __nccwpck_require__(2336);
 const Frame_js_2 = __nccwpck_require__(45560);
 const FrameManagerEvents_js_1 = __nccwpck_require__(39156);
 const FrameTree_js_1 = __nccwpck_require__(372);
+const IsolatedWorld_js_1 = __nccwpck_require__(2300);
 const IsolatedWorlds_js_1 = __nccwpck_require__(22227);
 const NetworkManager_js_1 = __nccwpck_require__(6276);
 const TIME_FOR_WAITING_FOR_SWAP = 100; // ms.
+const CHROME_EXTENSION_PREFIX = 'chrome-extension://';
 /**
  * A frame manager manages the frames for a given {@link Page | page}.
  *
@@ -106287,6 +108096,9 @@ class FrameManager extends EventEmitter_js_1.EventEmitter {
             await this.#frameTreeHandled?.valueOrThrow();
             this.#onLifecycleEvent(event);
         });
+        session.on('Audits.issueAdded', event => {
+            this.#page.emit("issue" /* PageEvent.Issue */, new CdpIssue_js_1.CdpIssue(event.issue));
+        });
     }
     async initialize(client, frame) {
         try {
@@ -106315,6 +108127,7 @@ class FrameManager extends EventEmitter_js_1.EventEmitter {
                 ...(frame ? Array.from(this.#bindings.values()) : []).map(binding => {
                     return frame?.addExposedFunctionBinding(binding);
                 }),
+                this.#page.browser().isIssuesEnabled() && client.send('Audits.enable'),
             ]);
         }
         catch (error) {
@@ -106544,8 +108357,22 @@ class FrameManager extends EventEmitter_js_1.EventEmitter {
                 break;
         }
     }
+    #isExtensionOrigin(origin) {
+        return origin.startsWith(CHROME_EXTENSION_PREFIX);
+    }
+    #extractExtensionId(origin) {
+        if (!origin || !this.#isExtensionOrigin(origin)) {
+            return null;
+        }
+        const pathPart = origin.substring(CHROME_EXTENSION_PREFIX.length);
+        const slashIndex = pathPart.indexOf('/');
+        // if there's no / it means that pathPart is now the extensionId, otherwise
+        // we take everything until the first /
+        return slashIndex === -1 ? pathPart : pathPart.substring(0, slashIndex);
+    }
     #onExecutionContextCreated(contextPayload, session) {
         const auxData = contextPayload.auxData;
+        const origin = contextPayload.origin;
         const frameId = auxData && auxData.frameId;
         const frame = typeof frameId === 'string' ? this.frame(frameId) : undefined;
         let world;
@@ -106563,6 +108390,23 @@ class FrameManager extends EventEmitter_js_1.EventEmitter {
                 // We can use either.
                 world = frame.worlds[IsolatedWorlds_js_1.PUPPETEER_WORLD];
             }
+            else if (this.#isExtensionOrigin(origin)) {
+                const extId = this.#extractExtensionId(origin);
+                if (!extId) {
+                    (0, util_js_1.debugError)('Error while parsing extension id');
+                    return;
+                }
+                if (frame.extensionWorlds[extId]) {
+                    world = frame.extensionWorlds[extId];
+                }
+                else {
+                    world = new IsolatedWorld_js_1.IsolatedWorld(frame, this.timeoutSettings, extId);
+                    frame.extensionWorlds[extId] = world;
+                    frame.registerWorldListeners(world);
+                    world.origin = origin;
+                    world.setWorldId(extId);
+                }
+            }
         }
         // If there is no world, the context is not meant to be handled by us.
         if (!world) {
@@ -106575,10 +108419,12 @@ class FrameManager extends EventEmitter_js_1.EventEmitter {
         for (const child of frame.childFrames()) {
             this.#removeFramesRecursively(child);
         }
-        frame[disposable_js_1.disposeSymbol]();
         this._frameTree.removeFrame(frame);
         this.emit(FrameManagerEvents_js_1.FrameManagerEvent.FrameDetached, frame);
         frame.emit(Frame_js_1.FrameEvent.FrameDetached, frame);
+        // Needs to be last to ensure events
+        // sent before handlers are cleared.
+        frame[disposable_js_1.disposeSymbol]();
     }
 }
 exports.FrameManager = FrameManager;
@@ -107596,17 +109442,22 @@ const EventEmitter_js_1 = __nccwpck_require__(43951);
 const util_js_1 = __nccwpck_require__(37165);
 const disposable_js_1 = __nccwpck_require__(32608);
 const ElementHandle_js_1 = __nccwpck_require__(94923);
+const IsolatedWorlds_js_1 = __nccwpck_require__(22227);
 const JSHandle_js_1 = __nccwpck_require__(95740);
+const WebWorker_js_1 = __nccwpck_require__(86797);
 /**
  * @internal
  */
 class IsolatedWorld extends Realm_js_1.Realm {
     #context;
     #emitter = new EventEmitter_js_1.EventEmitter();
+    #worldId;
+    #origin;
     #frameOrWorker;
-    constructor(frameOrWorker, timeoutSettings) {
+    constructor(frameOrWorker, timeoutSettings, worldId) {
         super(timeoutSettings);
         this.#frameOrWorker = frameOrWorker;
+        this.#worldId = worldId;
     }
     get environment() {
         return this.#frameOrWorker;
@@ -107737,8 +109588,33 @@ class IsolatedWorld extends Realm_js_1.Realm {
     [disposable_js_1.disposeSymbol]() {
         this.#context?.[disposable_js_1.disposeSymbol]();
         this.#emitter.emit('disposed', undefined);
-        super[disposable_js_1.disposeSymbol]();
         this.#emitter.removeAllListeners();
+        super[disposable_js_1.disposeSymbol]();
+    }
+    get origin() {
+        return this.#origin;
+    }
+    set origin(origin) {
+        this.#origin = origin;
+    }
+    setWorldId(worldId) {
+        this.#worldId = worldId;
+    }
+    async extension() {
+        if (this.#frameOrWorker instanceof WebWorker_js_1.CdpWebWorker) {
+            throw new Error('Unable to get extension from Realm');
+        }
+        if (this.#worldId === IsolatedWorlds_js_1.MAIN_WORLD) {
+            return null;
+        }
+        if (typeof this.#worldId === 'string') {
+            const extensions = await this.#frameOrWorker._frameManager
+                .page()
+                .browser()
+                .extensions();
+            return extensions.get(this.#worldId) ?? null;
+        }
+        return null;
     }
 }
 exports.IsolatedWorld = IsolatedWorld;
@@ -108928,6 +110804,7 @@ exports.convertCookiesPartitionKeyFromPuppeteerToCdp = convertCookiesPartitionKe
 const rxjs_js_1 = __nccwpck_require__(43836);
 const CDPSession_js_1 = __nccwpck_require__(77409);
 const Page_js_1 = __nccwpck_require__(69029);
+const WebWorker_js_1 = __nccwpck_require__(72612);
 const ConsoleMessage_js_1 = __nccwpck_require__(60801);
 const Errors_js_1 = __nccwpck_require__(41938);
 const EventEmitter_js_1 = __nccwpck_require__(43951);
@@ -108953,15 +110830,8 @@ const IsolatedWorlds_js_1 = __nccwpck_require__(22227);
 const JSHandle_js_1 = __nccwpck_require__(95740);
 const Tracing_js_1 = __nccwpck_require__(74519);
 const utils_js_1 = __nccwpck_require__(33052);
-const WebWorker_js_1 = __nccwpck_require__(86797);
-function convertConsoleMessageLevel(method) {
-    switch (method) {
-        case 'warning':
-            return 'warn';
-        default:
-            return method;
-    }
-}
+const WebMCP_js_1 = __nccwpck_require__(44495);
+const WebWorker_js_2 = __nccwpck_require__(86797);
 /**
  * @internal
  */
@@ -109010,6 +110880,7 @@ class CdpPage extends Page_js_1.Page {
     #frameManager;
     #emulationManager;
     #tracing;
+    #webmcp;
     #bindings = new Map();
     #exposedFunctions = new Map();
     #coverage;
@@ -109035,6 +110906,7 @@ class CdpPage extends Page_js_1.Page {
         this.#frameManager = new FrameManager_js_1.FrameManager(client, this, this._timeoutSettings);
         this.#emulationManager = new EmulationManager_js_1.EmulationManager(client);
         this.#tracing = new Tracing_js_1.Tracing(client);
+        this.#webmcp = new WebMCP_js_1.WebMCP(client, this.#frameManager);
         this.#coverage = new Coverage_js_1.Coverage(client);
         this.#viewport = null;
         // Use browser context's connection, as current Bluetooth emulation in Chromium is
@@ -109115,6 +110987,7 @@ class CdpPage extends Page_js_1.Page {
         this.#touchscreen.updateClient(newSession);
         this.#emulationManager.updateClient(newSession);
         this.#tracing.updateClient(newSession);
+        this.#webmcp.updateClient(newSession);
         this.#coverage.updateClient(newSession);
         await this.#frameManager.swapFrameTree(newSession);
         this.#setupPrimaryTargetListeners();
@@ -109165,8 +111038,23 @@ class CdpPage extends Page_js_1.Page {
         (0, assert_js_1.assert)(session instanceof CdpSession_js_1.CdpCDPSession);
         this.#frameManager.onAttachedToTarget(session.target());
         if (session.target()._getTargetInfo().type === 'worker') {
-            const worker = new WebWorker_js_1.CdpWebWorker(session, session.target().url(), session.target()._targetId, session.target().type(), this.#onConsoleAPI.bind(this), this.#handleException.bind(this), this.#frameManager.networkManager);
+            const worker = new WebWorker_js_2.CdpWebWorker(session, session.target().url(), session.target()._targetId, session.target().type(), this.#handleException.bind(this), this.#frameManager.networkManager);
             this.#workers.set(session.id(), worker);
+            worker.internalEmitter.on(WebWorker_js_1.WebWorkerEvent.Console, message => {
+                const noListenersForConsoleOnPage = this.listenerCount("console" /* PageEvent.Console */) === 0;
+                const noListenersForConsoleOnWorker = worker.listenerCount(WebWorker_js_1.WebWorkerEvent.Console) === 0;
+                if (noListenersForConsoleOnPage && noListenersForConsoleOnWorker) {
+                    // eslint-disable-next-line max-len -- The comment is long.
+                    // eslint-disable-next-line @puppeteer/use-using -- These are not owned by this function.
+                    for (const arg of message.args()) {
+                        void arg.dispose().catch(util_js_1.debugError);
+                    }
+                    return;
+                }
+                if (!noListenersForConsoleOnPage) {
+                    this.emit("console" /* PageEvent.Console */, message);
+                }
+            });
             this.emit("workercreated" /* PageEvent.WorkerCreated */, worker);
         }
         session.on(CDPSession_js_1.CDPSessionEvent.Ready, this.#onAttachedToTarget);
@@ -109177,6 +111065,7 @@ class CdpPage extends Page_js_1.Page {
                 this.#frameManager.initialize(this.#primaryTargetClient),
                 this.#primaryTargetClient.send('Performance.enable'),
                 this.#primaryTargetClient.send('Log.enable'),
+                this.#webmcp.initialize(),
             ]);
         }
         catch (err) {
@@ -109227,6 +111116,9 @@ class CdpPage extends Page_js_1.Page {
     _client() {
         return this.#primaryTargetClient;
     }
+    _isUrlAllowed(url) {
+        return this.#targetManager.isUrlAllowed(url);
+    }
     isServiceWorkerBypassed() {
         return this.#serviceWorkerBypassed;
     }
@@ -109239,8 +111131,17 @@ class CdpPage extends Page_js_1.Page {
     async openDevTools() {
         const pageTargetId = this.target()._targetId;
         const browser = this.browser();
+        const devtoolsTargetId = await browser._hasDevToolsTarget(this.target()._targetId);
+        if (devtoolsTargetId) {
+            return await browser._getDevToolsTargetPage(devtoolsTargetId);
+        }
         const devtoolsPage = await browser._createDevToolsPage(pageTargetId);
         return devtoolsPage;
+    }
+    async hasDevTools() {
+        const browser = this.browser();
+        const targetId = await browser._hasDevToolsTarget(this.target()._targetId);
+        return Boolean(targetId);
     }
     async waitForFileChooser(options = {}) {
         const needsEnable = this.#fileChooserDeferreds.size === 0;
@@ -109296,7 +111197,7 @@ class CdpPage extends Page_js_1.Page {
             });
         }
         if (source !== 'worker') {
-            this.emit("console" /* PageEvent.Console */, new ConsoleMessage_js_1.ConsoleMessage(convertConsoleMessageLevel(level), text, [], [{ url, lineNumber }], undefined, stackTrace, this.#primaryTarget._targetId));
+            this.emit("console" /* PageEvent.Console */, new ConsoleMessage_js_1.ConsoleMessage((0, utils_js_1.convertConsoleMessageLevel)(level), text, [], [{ url, lineNumber }], undefined, stackTrace, this.#primaryTarget._targetId));
         }
     }
     mainFrame() {
@@ -109313,6 +111214,9 @@ class CdpPage extends Page_js_1.Page {
     }
     get tracing() {
         return this.#tracing;
+    }
+    get webmcp() {
+        return this.#webmcp;
     }
     frames() {
         return this.#frameManager.frames();
@@ -109384,7 +111288,7 @@ class CdpPage extends Page_js_1.Page {
                     ? cookie.partitionKey.topLevelSite
                     : undefined,
                 // TODO: remove sameParty as it is removed from Chrome.
-                sameParty: cookie.sameParty ?? false,
+                sameParty: false,
             };
         });
     }
@@ -109537,38 +111441,30 @@ class CdpPage extends Page_js_1.Page {
     #handleException(exception) {
         this.emit("pageerror" /* PageEvent.PageError */, (0, utils_js_1.createClientError)(exception.exceptionDetails));
     }
-    #onConsoleAPI(world, event) {
-        const values = event.args.map(arg => {
-            return world.createCdpHandle(arg);
-        });
-        if (!this.listenerCount("console" /* PageEvent.Console */)) {
-            values.forEach(arg => {
-                return arg.dispose();
+    #onConsoleAPI(world, event, values) {
+        if (!values) {
+            values = event.args.map(arg => {
+                return world.createCdpHandle(arg);
             });
-            return;
         }
-        const textTokens = [];
-        // eslint-disable-next-line max-len -- The comment is long.
-        // eslint-disable-next-line @puppeteer/use-using -- These are not owned by this function.
-        for (const arg of values) {
-            textTokens.push((0, utils_js_1.valueFromJSHandle)(arg));
-        }
-        const stackTraceLocations = [];
-        if (event.stackTrace) {
-            for (const callFrame of event.stackTrace.callFrames) {
-                stackTraceLocations.push({
-                    url: callFrame.url,
-                    lineNumber: callFrame.lineNumber,
-                    columnNumber: callFrame.columnNumber,
-                });
+        const hasPageConsoleListeners = this.listenerCount("console" /* PageEvent.Console */) > 0;
+        const hasWorkerConsoleListeners = world.environment instanceof WebWorker_js_1.WebWorker &&
+            world.environment.listenerCount(WebWorker_js_1.WebWorkerEvent.Console) > 0;
+        if (!hasPageConsoleListeners) {
+            if (!hasWorkerConsoleListeners) {
+                // eslint-disable-next-line max-len -- The comment is long.
+                // eslint-disable-next-line @puppeteer/use-using -- These are not owned by this function.
+                for (const value of values) {
+                    void value.dispose().catch(util_js_1.debugError);
+                }
             }
+            return;
         }
         let targetId;
         if (world.environment.client instanceof CdpSession_js_1.CdpCDPSession) {
             targetId = world.environment.client.target()._targetId;
         }
-        const message = new ConsoleMessage_js_1.ConsoleMessage(convertConsoleMessageLevel(event.type), textTokens.join(' '), values, stackTraceLocations, undefined, event.stackTrace, targetId);
-        this.emit("console" /* PageEvent.Console */, message);
+        this.emit("console" /* PageEvent.Console */, (0, utils_js_1.createConsoleMessage)(event, values, targetId));
     }
     async #onBindingCalled(world, event) {
         let payload;
@@ -109639,6 +111535,9 @@ class CdpPage extends Page_js_1.Page {
     }
     async setBypassCSP(enabled) {
         await this.#primaryTargetClient.send('Page.setBypassCSP', { enabled });
+    }
+    async triggerExtensionAction(extension) {
+        return await extension.triggerAction(this);
     }
     async emulateMediaType(type) {
         return await this.#emulationManager.emulateMediaType(type);
@@ -109827,6 +111726,9 @@ class CdpPage extends Page_js_1.Page {
     get bluetooth() {
         return this.#cdpBluetoothEmulation;
     }
+    extensionRealms() {
+        return this.mainFrame().extensionRealms();
+    }
 }
 exports.CdpPage = CdpPage;
 const supportedMetrics = new Set([
@@ -109995,6 +111897,9 @@ class CdpTarget extends Target_js_1.Target {
     _initializedDeferred = Deferred_js_1.Deferred.create();
     _isClosedDeferred = Deferred_js_1.Deferred.create();
     _targetId;
+    _asPagePromise;
+    /** @internal */
+    pagePromise;
     /**
      * To initialize the target for use, call initialize.
      *
@@ -110013,13 +111918,21 @@ class CdpTarget extends Target_js_1.Target {
         }
     }
     async asPage() {
-        const session = this._session();
-        if (!session) {
-            return await this.createCDPSession().then(client => {
+        if (this.pagePromise) {
+            const page = await this.pagePromise;
+            if (page) {
+                return page;
+            }
+        }
+        if (!this._asPagePromise) {
+            const session = this._session();
+            this._asPagePromise = (session
+                ? Promise.resolve(session)
+                : this._sessionFactory()(/* isAutoAttachEmulated=*/ false)).then(client => {
                 return Page_js_1.CdpPage._create(client, this, null);
             });
         }
-        return await Page_js_1.CdpPage._create(session, this, null);
+        return (await this._asPagePromise) ?? null;
     }
     _subtype() {
         return this.#targetInfo.subtype;
@@ -110129,7 +112042,6 @@ exports.CdpTarget = CdpTarget;
  */
 class PageTarget extends CdpTarget {
     #defaultViewport;
-    pagePromise;
     constructor(targetInfo, session, browserContext, targetManager, sessionFactory, defaultViewport) {
         super(targetInfo, session, browserContext, targetManager, sessionFactory);
         this.#defaultViewport = defaultViewport ?? undefined;
@@ -110194,11 +112106,10 @@ class WorkerTarget extends CdpTarget {
     async worker() {
         if (!this.#workerPromise) {
             const session = this._session();
-            // TODO(einbinder): Make workers send their console logs.
             this.#workerPromise = (session
                 ? Promise.resolve(session)
                 : this._sessionFactory()(/* isAutoAttachEmulated=*/ false)).then(client => {
-                return new WebWorker_js_1.CdpWebWorker(client, this._getTargetInfo().url, this._targetId, this.type(), () => { } /* consoleAPICalled */, () => { } /* exceptionThrown */, undefined /* networkManager */);
+                return new WebWorker_js_1.CdpWebWorker(client, this._getTargetInfo().url, this._targetId, this.type(), () => { } /* exceptionThrown */, undefined /* networkManager */);
             });
         }
         return await this.#workerPromise;
@@ -110242,6 +112153,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.TargetManager = void 0;
+const urlpattern_polyfill_js_1 = __nccwpck_require__(84268);
 const CDPSession_js_1 = __nccwpck_require__(77409);
 const EventEmitter_js_1 = __nccwpck_require__(43951);
 const util_js_1 = __nccwpck_require__(37165);
@@ -110309,12 +112221,19 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
     // done. It indicates whethere we are running the initial auto-attach step or
     // if we are handling targets after that.
     #initialAttachDone = false;
-    constructor(connection, targetFactory, targetFilterCallback, waitForInitiallyDiscoveredTargets = true) {
+    #blocklist = [];
+    #allowlist = [];
+    constructor(connection, targetFactory, targetFilterCallback, waitForInitiallyDiscoveredTargets = true, blocklist, allowlist) {
         super();
+        if (blocklist && allowlist) {
+            throw new Error('Cannot specify both blockList and allowList');
+        }
         this.#connection = connection;
         this.#targetFilterCallback = targetFilterCallback;
         this.#targetFactory = targetFactory;
         this.#waitForInitiallyDiscoveredTargets = waitForInitiallyDiscoveredTargets;
+        this.#blocklist = this.#mapPatterns(blocklist);
+        this.#allowlist = this.#mapPatterns(allowlist);
         this.#connection.on('Target.targetCreated', this.#onTargetCreated);
         this.#connection.on('Target.targetDestroyed', this.#onTargetDestroyed);
         this.#connection.on('Target.targetInfoChanged', this.#onTargetInfoChanged);
@@ -110342,6 +112261,9 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
         this.#finishInitializationIfReady();
         await this.#initializeDeferred.valueOrThrow();
     }
+    addToIgnoreTarget(targetId) {
+        this.#ignoredTargets.add(targetId);
+    }
     getChildTargets(target) {
         return target._childTargets();
     }
@@ -110354,6 +112276,9 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
     }
     getAvailableTargets() {
         return this.#attachedTargetsByTargetId;
+    }
+    getDiscoveredTargetInfos() {
+        return this.#discoveredTargetsByTargetId;
     }
     #setupAttachmentListeners(session) {
         const listener = (event) => {
@@ -110463,6 +112388,12 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
         if (!this.#connection.isAutoAttached(targetInfo.targetId)) {
             return;
         }
+        // If we connect to a browser that is already open,
+        // immediately detach from any tab that is on the blocklist.
+        if (!this.#initialAttachDone && !this.isUrlAllowed(targetInfo.url)) {
+            await this.#silentDetach(session, parentSession);
+            return;
+        }
         // Special case for service workers: being attached to service workers will
         // prevent them from ever being destroyed. Therefore, we silently detach
         // from service workers unless the connection was manually created via
@@ -110472,7 +112403,9 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
         // CDP.
         if (targetInfo.type === 'service_worker') {
             await this.#silentDetach(session, parentSession);
-            if (this.#attachedTargetsByTargetId.has(targetInfo.targetId)) {
+            if (this.#attachedTargetsByTargetId.has(targetInfo.targetId) ||
+                this.#ignoredTargets.has(targetInfo.targetId) ||
+                !this.#discoveredTargetsByTargetId.has(targetInfo.targetId)) {
                 return;
             }
             const target = this.#targetFactory(targetInfo);
@@ -110527,6 +112460,7 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
                 autoAttach: true,
                 filter: this.#discoveryFilter,
             }),
+            this.#maybeSetupNetworkConditions(session),
             session.send('Runtime.runIfWaitingForDebugger'),
         ]).catch(util_js_1.debugError);
     };
@@ -110554,6 +112488,77 @@ class TargetManager extends EventEmitter_js_1.EventEmitter {
         }
         this.#attachedTargetsByTargetId.delete(target._targetId);
         this.emit("targetGone" /* TargetManagerEvent.TargetGone */, target);
+    };
+    /**
+     * Helper to validate URL against blocklist patterns
+     */
+    isUrlAllowed = (url) => {
+        if (this.#blocklist.length === 0 && this.#allowlist.length === 0) {
+            return true;
+        }
+        // Always allow internal or setup pages
+        if (!url || url === 'about:blank') {
+            return true;
+        }
+        for (const item of this.#blocklist) {
+            if (item.pattern.test(url)) {
+                return false;
+            }
+        }
+        if (this.#allowlist.length > 0) {
+            for (const item of this.#allowlist) {
+                if (item.pattern.test(url)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return true;
+    };
+    #mapPatterns(rules) {
+        const result = [];
+        for (const rule of rules ?? []) {
+            result.push({ pattern: new urlpattern_polyfill_js_1.URLPattern(rule), rule });
+        }
+        return result;
+    }
+    #maybeSetupNetworkConditions = async (session) => {
+        if (this.#blocklist.length === 0 && this.#allowlist.length === 0) {
+            return;
+        }
+        const matchedNetworkConditions = [];
+        for (const item of this.#blocklist) {
+            matchedNetworkConditions.push({
+                urlPattern: item.rule,
+                offline: true,
+                latency: 0,
+                downloadThroughput: -1,
+                uploadThroughput: -1,
+            });
+        }
+        if (this.#allowlist.length > 0) {
+            for (const item of this.#allowlist) {
+                matchedNetworkConditions.push({
+                    urlPattern: item.rule,
+                    offline: false,
+                    latency: 0,
+                    downloadThroughput: -1,
+                    uploadThroughput: -1,
+                });
+            }
+            matchedNetworkConditions.push({
+                urlPattern: '',
+                offline: true,
+                latency: 0,
+                downloadThroughput: -1,
+                uploadThroughput: -1,
+            });
+        }
+        await session.send('Network.emulateNetworkConditionsByRule', {
+            // @ts-expect-error offline cannot be undefined before M149.
+            offline: this.#blocklist.length > 0 ? true : undefined,
+            matchedNetworkConditions,
+        });
     };
 }
 exports.TargetManager = TargetManager;
@@ -110682,6 +112687,294 @@ exports.Tracing = Tracing;
 
 /***/ }),
 
+/***/ 44495:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/**
+ * @license
+ * Copyright 2026 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.WebMCP = exports.WebMCPToolCall = exports.WebMCPTool = void 0;
+const EventEmitter_js_1 = __nccwpck_require__(43951);
+const util_js_1 = __nccwpck_require__(37165);
+const FrameManagerEvents_js_1 = __nccwpck_require__(39156);
+const IsolatedWorlds_js_1 = __nccwpck_require__(22227);
+/**
+ * Represents a registered WebMCP tool available on the page.
+ *
+ * @public
+ */
+class WebMCPTool extends EventEmitter_js_1.EventEmitter {
+    #webmcp;
+    #backendNodeId;
+    #formElement;
+    /**
+     * Tool name.
+     */
+    name;
+    /**
+     * Tool description.
+     */
+    description;
+    /**
+     * Schema for the tool's input parameters.
+     */
+    inputSchema;
+    /**
+     * Optional annotations for the tool.
+     */
+    annotations;
+    /**
+     * Frame the tool was defined for.
+     */
+    frame;
+    /**
+     * Source location that defined the tool (if available).
+     */
+    location;
+    /**
+     * @internal
+     */
+    rawStackTrace;
+    /**
+     * @internal
+     */
+    constructor(webmcp, tool, frame) {
+        super();
+        this.#webmcp = webmcp;
+        this.name = tool.name;
+        this.description = tool.description;
+        this.inputSchema = tool.inputSchema;
+        this.annotations = tool.annotations;
+        this.frame = frame;
+        this.#backendNodeId = tool.backendNodeId;
+        if (tool.stackTrace?.callFrames.length) {
+            this.location = {
+                url: tool.stackTrace.callFrames[0].url,
+                lineNumber: tool.stackTrace.callFrames[0].lineNumber,
+                columnNumber: tool.stackTrace.callFrames[0].columnNumber,
+            };
+        }
+        this.rawStackTrace = tool.stackTrace;
+    }
+    /**
+     * The corresponding ElementHandle when tool was registered via a form.
+     */
+    get formElement() {
+        return (async () => {
+            if (this.#formElement && !this.#formElement.disposed) {
+                return this.#formElement;
+            }
+            if (!this.#backendNodeId) {
+                return undefined;
+            }
+            this.#formElement = (await this.frame.worlds[IsolatedWorlds_js_1.MAIN_WORLD].adoptBackendNode(this.#backendNodeId));
+            return this.#formElement;
+        })();
+    }
+    /**
+     * Executes tool with input parameters, matching tool's `inputSchema`.
+     */
+    async execute(input = {}) {
+        const { invocationId } = await this.#webmcp.invokeTool(this, input);
+        return await new Promise(resolve => {
+            const handler = (event) => {
+                if (event.id === invocationId) {
+                    this.#webmcp.off('toolresponded', handler);
+                    resolve(event);
+                }
+            };
+            this.#webmcp.on('toolresponded', handler);
+        });
+    }
+}
+exports.WebMCPTool = WebMCPTool;
+/**
+ * @public
+ */
+class WebMCPToolCall {
+    /**
+     * Tool invocation identifier.
+     */
+    id;
+    /**
+     * Tool that was called.
+     */
+    tool;
+    /**
+     * The input parameters used for the call.
+     */
+    input;
+    /**
+     * @internal
+     */
+    constructor(invocationId, tool, input) {
+        this.id = invocationId;
+        this.tool = tool;
+        try {
+            this.input = JSON.parse(input);
+        }
+        catch (error) {
+            this.input = {};
+            (0, util_js_1.debugError)(error);
+        }
+    }
+}
+exports.WebMCPToolCall = WebMCPToolCall;
+/**
+ * The experimental WebMCP class provides an API for the WebMCP API.
+ *
+ * See the
+ * {@link https://pptr.dev/guides/webmcp|WebMCP guide}
+ * for more details.
+ *
+ * @example
+ *
+ * ```ts
+ * await page.goto('https://www.example.com');
+ * const tools = page.webmcp.tools();
+ * for (const tool of tools) {
+ *   console.log(`Tool found: ${tool.name} - ${tool.description}`);
+ * }
+ * ```
+ *
+ * @experimental
+ * @public
+ */
+class WebMCP extends EventEmitter_js_1.EventEmitter {
+    #client;
+    #frameManager;
+    #tools = new Map();
+    #pendingCalls = new Map();
+    #onToolsAdded = (event) => {
+        const tools = [];
+        for (const tool of event.tools) {
+            const frame = this.#frameManager.frame(tool.frameId);
+            if (!frame) {
+                continue;
+            }
+            const frameTools = this.#tools.get(tool.frameId) ?? new Map();
+            if (!this.#tools.has(tool.frameId)) {
+                this.#tools.set(tool.frameId, frameTools);
+            }
+            const addedTool = new WebMCPTool(this, tool, frame);
+            frameTools.set(tool.name, addedTool);
+            tools.push(addedTool);
+        }
+        this.emit('toolsadded', { tools });
+    };
+    #onToolsRemoved = (event) => {
+        const tools = [];
+        event.tools.forEach(tool => {
+            const removedTool = this.#tools.get(tool.frameId)?.get(tool.name);
+            if (removedTool) {
+                tools.push(removedTool);
+            }
+            this.#tools.get(tool.frameId)?.delete(tool.name);
+        });
+        this.emit('toolsremoved', { tools });
+    };
+    #onToolInvoked = (event) => {
+        const tool = this.#tools.get(event.frameId)?.get(event.toolName);
+        if (!tool) {
+            return;
+        }
+        const call = new WebMCPToolCall(event.invocationId, tool, event.input);
+        this.#pendingCalls.set(call.id, call);
+        tool.emit('toolinvoked', call);
+        this.emit('toolinvoked', call);
+    };
+    #onToolResponded = (event) => {
+        const call = this.#pendingCalls.get(event.invocationId);
+        if (call) {
+            this.#pendingCalls.delete(event.invocationId);
+        }
+        const response = {
+            id: event.invocationId,
+            call: call,
+            status: event.status,
+            output: event.output,
+            errorText: event.errorText,
+            exception: event.exception,
+        };
+        this.emit('toolresponded', response);
+    };
+    #onFrameNavigated = (frame) => {
+        this.#pendingCalls.clear();
+        const frameTools = this.#tools.get(frame._id);
+        if (!frameTools) {
+            return;
+        }
+        const tools = Array.from(frameTools.values());
+        this.#tools.delete(frame._id);
+        if (tools.length) {
+            this.emit('toolsremoved', { tools });
+        }
+    };
+    /**
+     * @internal
+     */
+    constructor(client, frameManager) {
+        super();
+        this.#client = client;
+        this.#frameManager = frameManager;
+        this.#frameManager.on(FrameManagerEvents_js_1.FrameManagerEvent.FrameNavigated, this.#onFrameNavigated);
+        this.#bindListeners();
+    }
+    /**
+     * @internal
+     */
+    async initialize() {
+        return await this.#client.send('WebMCP.enable').catch(util_js_1.debugError);
+    }
+    /**
+     * @internal
+     */
+    async invokeTool(tool, input) {
+        // @ts-expect-error WebMCP is not yet in the Protocol types.
+        return await this.#client.send('WebMCP.invokeTool', {
+            frameId: tool.frame._id,
+            toolName: tool.name,
+            input,
+        });
+    }
+    /**
+     * Gets all WebMCP tools defined by the page.
+     */
+    tools() {
+        return Array.from(this.#tools.values()).flatMap(toolMap => {
+            return Array.from(toolMap.values());
+        });
+    }
+    #bindListeners() {
+        this.#client.on('WebMCP.toolsAdded', this.#onToolsAdded);
+        this.#client.on('WebMCP.toolsRemoved', this.#onToolsRemoved);
+        this.#client.on('WebMCP.toolInvoked', this.#onToolInvoked);
+        // @ts-expect-error M148 has non-final status type, update expected in M149
+        this.#client.on('WebMCP.toolResponded', this.#onToolResponded);
+    }
+    /**
+     * @internal
+     */
+    updateClient(client) {
+        this.#client.off('WebMCP.toolsAdded', this.#onToolsAdded);
+        this.#client.off('WebMCP.toolsRemoved', this.#onToolsRemoved);
+        this.#client.off('WebMCP.toolInvoked', this.#onToolInvoked);
+        // @ts-expect-error M148 has non-final status type, update expected in M149
+        this.#client.off('WebMCP.toolResponded', this.#onToolResponded);
+        this.#client = client;
+        this.#bindListeners();
+    }
+}
+exports.WebMCP = WebMCP;
+//# sourceMappingURL=WebMCP.js.map
+
+/***/ }),
+
 /***/ 86797:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -110692,10 +112985,13 @@ exports.CdpWebWorker = void 0;
 const CDPSession_js_1 = __nccwpck_require__(77409);
 const Target_js_1 = __nccwpck_require__(17595);
 const WebWorker_js_1 = __nccwpck_require__(72612);
+const EventEmitter_js_1 = __nccwpck_require__(43951);
 const TimeoutSettings_js_1 = __nccwpck_require__(54147);
 const util_js_1 = __nccwpck_require__(37165);
 const ExecutionContext_js_1 = __nccwpck_require__(2336);
 const IsolatedWorld_js_1 = __nccwpck_require__(2300);
+const IsolatedWorlds_js_1 = __nccwpck_require__(22227);
+const utils_js_1 = __nccwpck_require__(33052);
 /**
  * @internal
  */
@@ -110704,18 +113000,40 @@ class CdpWebWorker extends WebWorker_js_1.WebWorker {
     #client;
     #id;
     #targetType;
-    constructor(client, url, targetId, targetType, consoleAPICalled, exceptionThrown, networkManager) {
+    #emitter;
+    get internalEmitter() {
+        return this.#emitter;
+    }
+    constructor(client, url, targetId, targetType, exceptionThrown, networkManager) {
         super(url);
         this.#id = targetId;
         this.#client = client;
         this.#targetType = targetType;
-        this.#world = new IsolatedWorld_js_1.IsolatedWorld(this, new TimeoutSettings_js_1.TimeoutSettings());
+        this.#world = new IsolatedWorld_js_1.IsolatedWorld(this, new TimeoutSettings_js_1.TimeoutSettings(), IsolatedWorlds_js_1.MAIN_WORLD);
+        this.#emitter = new EventEmitter_js_1.EventEmitter();
         this.#client.once('Runtime.executionContextCreated', async (event) => {
             this.#world.setContext(new ExecutionContext_js_1.ExecutionContext(client, event.context, this.#world));
         });
         this.#world.emitter.on('consoleapicalled', async (event) => {
             try {
-                return consoleAPICalled(this.#world, event);
+                const values = event.args.map(arg => {
+                    return this.#world.createCdpHandle(arg);
+                });
+                const noInternalListeners = this.#emitter.listenerCount(WebWorker_js_1.WebWorkerEvent.Console) === 0;
+                const noWorkerListeners = this.listenerCount(WebWorker_js_1.WebWorkerEvent.Console) === 0;
+                if (noInternalListeners && noWorkerListeners) {
+                    // eslint-disable-next-line max-len -- The comment is long.
+                    // eslint-disable-next-line @puppeteer/use-using -- These are not owned by this function.
+                    for (const value of values) {
+                        void value.dispose().catch(util_js_1.debugError);
+                    }
+                    return;
+                }
+                const consoleMessages = (0, utils_js_1.createConsoleMessage)(event, values, this.#id);
+                this.#emitter.emit(WebWorker_js_1.WebWorkerEvent.Console, consoleMessages);
+                if (!noWorkerListeners) {
+                    this.emit(WebWorker_js_1.WebWorkerEvent.Console, consoleMessages);
+                }
             }
             catch (err) {
                 (0, util_js_1.debugError)(err);
@@ -110826,6 +113144,7 @@ __exportStar(__nccwpck_require__(95768), exports);
 __exportStar(__nccwpck_require__(7581), exports);
 __exportStar(__nccwpck_require__(67766), exports);
 __exportStar(__nccwpck_require__(74519), exports);
+__exportStar(__nccwpck_require__(44495), exports);
 __exportStar(__nccwpck_require__(33052), exports);
 __exportStar(__nccwpck_require__(86797), exports);
 //# sourceMappingURL=cdp.js.map
@@ -110844,6 +113163,7 @@ __exportStar(__nccwpck_require__(86797), exports);
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.CDP_BINDING_PREFIX = void 0;
+exports.createConsoleMessage = createConsoleMessage;
 exports.createEvaluationError = createEvaluationError;
 exports.createClientError = createClientError;
 exports.valueFromJSHandle = valueFromJSHandle;
@@ -110851,8 +113171,32 @@ exports.valueFromRemoteObjectReference = valueFromRemoteObjectReference;
 exports.valueFromPrimitiveRemoteObject = valueFromPrimitiveRemoteObject;
 exports.addPageBinding = addPageBinding;
 exports.pageBindingInitString = pageBindingInitString;
+exports.convertConsoleMessageLevel = convertConsoleMessageLevel;
+const ConsoleMessage_js_1 = __nccwpck_require__(60801);
 const util_js_1 = __nccwpck_require__(37165);
 const assert_js_1 = __nccwpck_require__(90680);
+/**
+ * @internal
+ */
+function createConsoleMessage(event, values, targetId) {
+    const textTokens = [];
+    // eslint-disable-next-line max-len -- The comment is long.
+    // eslint-disable-next-line @puppeteer/use-using -- These are not owned by this function.
+    for (const arg of values) {
+        textTokens.push(valueFromJSHandle(arg));
+    }
+    const stackTraceLocations = [];
+    if (event.stackTrace) {
+        for (const callFrame of event.stackTrace.callFrames) {
+            stackTraceLocations.push({
+                url: callFrame.url,
+                lineNumber: callFrame.lineNumber,
+                columnNumber: callFrame.columnNumber,
+            });
+        }
+    }
+    return new ConsoleMessage_js_1.ConsoleMessage(convertConsoleMessageLevel(event.type), textTokens.join(' '), values, stackTraceLocations, undefined, event.stackTrace, targetId);
+}
 /**
  * @internal
  */
@@ -111061,6 +113405,17 @@ exports.CDP_BINDING_PREFIX = 'puppeteer_';
 function pageBindingInitString(type, name) {
     return (0, util_js_1.evaluationString)(addPageBinding, type, name, exports.CDP_BINDING_PREFIX);
 }
+/**
+ * @internal
+ */
+function convertConsoleMessageLevel(method) {
+    switch (method) {
+        case 'warning':
+            return 'warn';
+        default:
+            return method;
+    }
+}
 //# sourceMappingURL=utils.js.map
 
 /***/ }),
@@ -111174,6 +113529,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.assertSupportedUrlRestrictions = assertSupportedUrlRestrictions;
 exports._connectToBrowser = _connectToBrowser;
 const BrowserConnector_js_1 = __nccwpck_require__(74743);
 const BrowserConnector_js_2 = __nccwpck_require__(82298);
@@ -111192,7 +113548,17 @@ const getWebSocketTransportClass = async () => {
  *
  * @internal
  */
+function assertSupportedUrlRestrictions(options) {
+    if (options.blocklist && options.allowlist) {
+        throw new Error('Cannot specify both blocklist and allowlist');
+    }
+    if (options.protocol === 'webDriverBiDi' &&
+        (options.blocklist || options.allowlist)) {
+        throw new Error('blocklist and allowlist are only supported with the CDP protocol');
+    }
+}
 async function _connectToBrowser(options) {
+    assertSupportedUrlRestrictions(options);
     const { connectionTransport, endpointUrl } = await getConnectionTransport(options);
     if (options.protocol === 'webDriverBiDi') {
         const bidiBrowser = await (0, BrowserConnector_js_1._connectToBiDiBrowser)(connectionTransport, endpointUrl, options);
@@ -113638,6 +116004,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.EventEmitter = void 0;
 const mitt_js_1 = __importDefault(__nccwpck_require__(35182));
 const disposable_js_1 = __nccwpck_require__(32608);
+const util_js_1 = __nccwpck_require__(37165);
 /**
  * The EventEmitter class that many Puppeteer classes extend.
  *
@@ -113750,6 +116117,12 @@ class EventEmitter {
      * @internal
      */
     [disposable_js_1.disposeSymbol]() {
+        return void this[disposable_js_1.asyncDisposeSymbol]().catch(util_js_1.debugError);
+    }
+    /**
+     * @internal
+     */
+    async [disposable_js_1.asyncDisposeSymbol]() {
         for (const [type, handlers] of this.#handlers) {
             for (const handler of handlers) {
                 this.#emitter.off(type, handler);
@@ -116256,6 +118629,7 @@ const browsers_1 = __nccwpck_require__(73403);
 const rxjs_js_1 = __nccwpck_require__(43836);
 const Browser_js_1 = __nccwpck_require__(23361);
 const Connection_js_1 = __nccwpck_require__(5129);
+const BrowserConnector_js_1 = __nccwpck_require__(85982);
 const Errors_js_1 = __nccwpck_require__(41938);
 const util_js_1 = __nccwpck_require__(37165);
 const incremental_id_generator_js_1 = __nccwpck_require__(8432);
@@ -116283,12 +118657,17 @@ class BrowserLauncher {
         return this.#browser;
     }
     async launch(options = {}) {
-        const { dumpio = false, enableExtensions = false, env = process.env, handleSIGINT = true, handleSIGTERM = true, handleSIGHUP = true, acceptInsecureCerts = false, networkEnabled = true, defaultViewport = util_js_1.DEFAULT_VIEWPORT, downloadBehavior, slowMo = 0, timeout = 30000, waitForInitialPage = true, protocolTimeout, handleDevToolsAsPage, idGenerator = (0, incremental_id_generator_js_1.createIncrementalIdGenerator)(), } = options;
+        const { dumpio = false, enableExtensions = false, env = process.env, handleSIGINT = true, handleSIGTERM = true, handleSIGHUP = true, acceptInsecureCerts = false, networkEnabled = true, issuesEnabled = true, defaultViewport = util_js_1.DEFAULT_VIEWPORT, downloadBehavior, slowMo = 0, timeout = 30000, waitForInitialPage = true, protocolTimeout, handleDevToolsAsPage, idGenerator = (0, incremental_id_generator_js_1.createIncrementalIdGenerator)(), blocklist, allowlist, } = options;
         let { protocol } = options;
         // Default to 'webDriverBiDi' for Firefox.
         if (this.#browser === 'firefox' && protocol === undefined) {
             protocol = 'webDriverBiDi';
         }
+        (0, BrowserConnector_js_1.assertSupportedUrlRestrictions)({
+            allowlist,
+            blocklist,
+            protocol,
+        });
         if (this.#browser === 'firefox' && protocol === 'cdp') {
             throw new Error('Connecting to Firefox using CDP is no longer supported');
         }
@@ -116366,10 +118745,11 @@ class BrowserLauncher {
                         defaultViewport,
                         acceptInsecureCerts,
                         networkEnabled,
+                        issuesEnabled,
                     });
                 }
                 else {
-                    browser = await Browser_js_1.CdpBrowser._create(cdpConnection, [], acceptInsecureCerts, defaultViewport, downloadBehavior, browserProcess.nodeProcess, browserCloseCallback, options.targetFilter, undefined, undefined, networkEnabled, handleDevToolsAsPage);
+                    browser = await Browser_js_1.CdpBrowser._create(cdpConnection, [], acceptInsecureCerts, defaultViewport, downloadBehavior, browserProcess.nodeProcess, browserCloseCallback, options.targetFilter, undefined, undefined, networkEnabled, issuesEnabled, handleDevToolsAsPage, blocklist, allowlist);
                 }
             }
         }
@@ -116480,6 +118860,7 @@ class BrowserLauncher {
             defaultViewport: opts.defaultViewport,
             acceptInsecureCerts: opts.acceptInsecureCerts,
             networkEnabled: opts.networkEnabled,
+            issuesEnabled: opts.issuesEnabled,
         });
     }
     /**
@@ -116497,6 +118878,7 @@ class BrowserLauncher {
             defaultViewport: opts.defaultViewport,
             acceptInsecureCerts: opts.acceptInsecureCerts,
             networkEnabled: opts.networkEnabled ?? true,
+            issuesEnabled: opts.issuesEnabled ?? true,
         });
     }
     /**
@@ -116694,7 +119076,7 @@ class ChromeLauncher extends BrowserLauncher_js_1.BrowserLauncher {
             'AcceptCHFrame',
             'MediaRouter',
             'OptimizationHints',
-            'RenderDocument', // https://crbug.com/444150315
+            'WebUIReloadButton',
             ...(turnOnExperimentalFeaturesForTesting
                 ? []
                 : [
@@ -116752,6 +119134,10 @@ class ChromeLauncher extends BrowserLauncher_js_1.BrowserLauncher {
             return arg !== '';
         });
         const { devtools = false, headless = !devtools, args = [], userDataDir, enableExtensions = false, } = options;
+        if (process.env['PUPPETEER_DANGEROUS_NO_SANDBOX'] === 'true' &&
+            !args.includes('--no-sandbox')) {
+            chromeArguments.push('--no-sandbox');
+        }
         if (userDataDir) {
             // If absolute (for any platform) path is given, we should not resolve it.
             chromeArguments.push(`--user-data-dir=${node_path_1.default.posix.isAbsolute(userDataDir) || node_path_1.default.win32.isAbsolute(userDataDir) ? userDataDir : node_path_1.default.resolve(userDataDir)}`);
@@ -117773,6 +120159,7 @@ let ScreenRecorder = (() => {
          */
         async [(_private_writeFrame_decorators = [(0, decorators_js_1.guarded)()], _stop_decorators = [(0, decorators_js_1.guarded)()], disposable_js_1.asyncDisposeSymbol)]() {
             await this.stop();
+            await super[disposable_js_1.asyncDisposeSymbol]();
         }
     };
 })();
@@ -117959,9 +120346,9 @@ exports.PUPPETEER_REVISIONS = void 0;
  * @internal
  */
 exports.PUPPETEER_REVISIONS = Object.freeze({
-    chrome: '145.0.7632.77',
-    'chrome-headless-shell': '145.0.7632.77',
-    firefox: 'stable_147.0.4',
+    chrome: '148.0.7778.97',
+    'chrome-headless-shell': '148.0.7778.97',
+    firefox: 'stable_150.0.2',
 });
 //# sourceMappingURL=revisions.js.map
 
@@ -118296,7 +120683,7 @@ class Mutex {
     async acquire(onRelease) {
         if (!this.#locked) {
             this.#locked = true;
-            return new Mutex.Guard(this);
+            return new Mutex.Guard(this, onRelease);
         }
         const deferred = Deferred_js_1.Deferred.create();
         this.#acquirers.push(deferred.resolve.bind(deferred));
@@ -119101,7 +121488,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.packageVersion = void 0;
 // If moved update release-please config
 // x-release-please-start-version
-exports.packageVersion = '24.37.5';
+exports.packageVersion = '24.43.1';
 // x-release-please-end
 //# sourceMappingURL=version.js.map
 
@@ -119157,7 +121544,7 @@ var __copyProps = (to, from, except, desc) => {
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// ../../node_modules/mitt/dist/mitt.mjs
+// node_modules/mitt/dist/mitt.mjs
 var mitt_exports = {};
 __export(mitt_exports, {
   default: () => mitt_default
@@ -119179,7 +121566,7 @@ function mitt_default(n) {
   } };
 }
 var init_mitt = __esm({
-  "../../node_modules/mitt/dist/mitt.mjs"() {
+  "node_modules/mitt/dist/mitt.mjs"() {
   }
 });
 
@@ -119270,7 +121657,7 @@ __export(parsel_js_exports, {
 });
 module.exports = __toCommonJS(parsel_js_exports);
 
-// ../../node_modules/parsel-js/dist/parsel.js
+// node_modules/parsel-js/dist/parsel.js
 var TOKENS = {
   attribute: /\[\s*(?:(?<namespace>\*|[-\w\P{ASCII}]*)\|)?(?<name>[-\w\P{ASCII}]+)\s*(?:(?<operator>\W?=)\s*(?<value>.+?)\s*(\s(?<caseSensitive>[iIsS]))?\s*)?\]/gu,
   id: /#(?<name>[-\w\P{ASCII}]+)/gu,
@@ -119656,9 +122043,9 @@ var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isFunction.js
+// node_modules/rxjs/dist/cjs/internal/util/isFunction.js
 var require_isFunction = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isFunction.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isFunction.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isFunction = void 0;
@@ -119669,9 +122056,9 @@ var require_isFunction = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/createErrorClass.js
+// node_modules/rxjs/dist/cjs/internal/util/createErrorClass.js
 var require_createErrorClass = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/createErrorClass.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/createErrorClass.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createErrorClass = void 0;
@@ -119689,9 +122076,9 @@ var require_createErrorClass = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/UnsubscriptionError.js
+// node_modules/rxjs/dist/cjs/internal/util/UnsubscriptionError.js
 var require_UnsubscriptionError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/UnsubscriptionError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/UnsubscriptionError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.UnsubscriptionError = void 0;
@@ -119709,9 +122096,9 @@ var require_UnsubscriptionError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/arrRemove.js
+// node_modules/rxjs/dist/cjs/internal/util/arrRemove.js
 var require_arrRemove = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/arrRemove.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/arrRemove.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.arrRemove = void 0;
@@ -119725,9 +122112,9 @@ var require_arrRemove = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/Subscription.js
+// node_modules/rxjs/dist/cjs/internal/Subscription.js
 var require_Subscription = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/Subscription.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/Subscription.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -119903,9 +122290,9 @@ var require_Subscription = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/config.js
+// node_modules/rxjs/dist/cjs/internal/config.js
 var require_config = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/config.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/config.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.config = void 0;
@@ -119919,9 +122306,9 @@ var require_config = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/timeoutProvider.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/timeoutProvider.js
 var require_timeoutProvider = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/timeoutProvider.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/timeoutProvider.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -119968,9 +122355,9 @@ var require_timeoutProvider = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/reportUnhandledError.js
+// node_modules/rxjs/dist/cjs/internal/util/reportUnhandledError.js
 var require_reportUnhandledError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/reportUnhandledError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/reportUnhandledError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.reportUnhandledError = void 0;
@@ -119990,9 +122377,9 @@ var require_reportUnhandledError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/noop.js
+// node_modules/rxjs/dist/cjs/internal/util/noop.js
 var require_noop = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/noop.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/noop.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.noop = void 0;
@@ -120002,9 +122389,9 @@ var require_noop = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/NotificationFactories.js
+// node_modules/rxjs/dist/cjs/internal/NotificationFactories.js
 var require_NotificationFactories = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/NotificationFactories.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/NotificationFactories.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createNotification = exports2.nextNotification = exports2.errorNotification = exports2.COMPLETE_NOTIFICATION = void 0;
@@ -120030,9 +122417,9 @@ var require_NotificationFactories = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/errorContext.js
+// node_modules/rxjs/dist/cjs/internal/util/errorContext.js
 var require_errorContext = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/errorContext.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/errorContext.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.captureError = exports2.errorContext = void 0;
@@ -120067,9 +122454,9 @@ var require_errorContext = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/Subscriber.js
+// node_modules/rxjs/dist/cjs/internal/Subscriber.js
 var require_Subscriber = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/Subscriber.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/Subscriber.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -120268,9 +122655,9 @@ var require_Subscriber = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/symbol/observable.js
+// node_modules/rxjs/dist/cjs/internal/symbol/observable.js
 var require_observable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/symbol/observable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/symbol/observable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.observable = void 0;
@@ -120280,9 +122667,9 @@ var require_observable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/identity.js
+// node_modules/rxjs/dist/cjs/internal/util/identity.js
 var require_identity = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/identity.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/identity.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.identity = void 0;
@@ -120293,9 +122680,9 @@ var require_identity = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/pipe.js
+// node_modules/rxjs/dist/cjs/internal/util/pipe.js
 var require_pipe = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/pipe.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/pipe.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.pipeFromArray = exports2.pipe = void 0;
@@ -120325,9 +122712,9 @@ var require_pipe = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/Observable.js
+// node_modules/rxjs/dist/cjs/internal/Observable.js
 var require_Observable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/Observable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/Observable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Observable = void 0;
@@ -120432,9 +122819,9 @@ var require_Observable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/lift.js
+// node_modules/rxjs/dist/cjs/internal/util/lift.js
 var require_lift = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/lift.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/lift.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.operate = exports2.hasLift = void 0;
@@ -120461,9 +122848,9 @@ var require_lift = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/OperatorSubscriber.js
+// node_modules/rxjs/dist/cjs/internal/operators/OperatorSubscriber.js
 var require_OperatorSubscriber = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/OperatorSubscriber.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/OperatorSubscriber.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -120538,9 +122925,9 @@ var require_OperatorSubscriber = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/refCount.js
+// node_modules/rxjs/dist/cjs/internal/operators/refCount.js
 var require_refCount = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/refCount.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/refCount.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.refCount = void 0;
@@ -120573,9 +122960,9 @@ var require_refCount = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/ConnectableObservable.js
+// node_modules/rxjs/dist/cjs/internal/observable/ConnectableObservable.js
 var require_ConnectableObservable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/ConnectableObservable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/ConnectableObservable.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -120664,9 +123051,9 @@ var require_ConnectableObservable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/performanceTimestampProvider.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/performanceTimestampProvider.js
 var require_performanceTimestampProvider = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/performanceTimestampProvider.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/performanceTimestampProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.performanceTimestampProvider = void 0;
@@ -120679,9 +123066,9 @@ var require_performanceTimestampProvider = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/animationFrameProvider.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/animationFrameProvider.js
 var require_animationFrameProvider = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/animationFrameProvider.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/animationFrameProvider.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -120746,9 +123133,9 @@ var require_animationFrameProvider = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/dom/animationFrames.js
+// node_modules/rxjs/dist/cjs/internal/observable/dom/animationFrames.js
 var require_animationFrames = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/dom/animationFrames.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/dom/animationFrames.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.animationFrames = void 0;
@@ -120789,9 +123176,9 @@ var require_animationFrames = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/ObjectUnsubscribedError.js
+// node_modules/rxjs/dist/cjs/internal/util/ObjectUnsubscribedError.js
 var require_ObjectUnsubscribedError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/ObjectUnsubscribedError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/ObjectUnsubscribedError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ObjectUnsubscribedError = void 0;
@@ -120806,9 +123193,9 @@ var require_ObjectUnsubscribedError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/Subject.js
+// node_modules/rxjs/dist/cjs/internal/Subject.js
 var require_Subject = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/Subject.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/Subject.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121005,9 +123392,9 @@ var require_Subject = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/BehaviorSubject.js
+// node_modules/rxjs/dist/cjs/internal/BehaviorSubject.js
 var require_BehaviorSubject = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/BehaviorSubject.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/BehaviorSubject.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121067,9 +123454,9 @@ var require_BehaviorSubject = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/dateTimestampProvider.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/dateTimestampProvider.js
 var require_dateTimestampProvider = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/dateTimestampProvider.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/dateTimestampProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.dateTimestampProvider = void 0;
@@ -121082,9 +123469,9 @@ var require_dateTimestampProvider = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/ReplaySubject.js
+// node_modules/rxjs/dist/cjs/internal/ReplaySubject.js
 var require_ReplaySubject = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/ReplaySubject.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/ReplaySubject.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121172,9 +123559,9 @@ var require_ReplaySubject = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/AsyncSubject.js
+// node_modules/rxjs/dist/cjs/internal/AsyncSubject.js
 var require_AsyncSubject = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/AsyncSubject.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/AsyncSubject.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121236,9 +123623,9 @@ var require_AsyncSubject = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/Action.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/Action.js
 var require_Action = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/Action.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/Action.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121279,9 +123666,9 @@ var require_Action = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/intervalProvider.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/intervalProvider.js
 var require_intervalProvider = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/intervalProvider.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/intervalProvider.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -121328,9 +123715,9 @@ var require_intervalProvider = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/AsyncAction.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/AsyncAction.js
 var require_AsyncAction = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/AsyncAction.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/AsyncAction.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121448,9 +123835,9 @@ var require_AsyncAction = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/Immediate.js
+// node_modules/rxjs/dist/cjs/internal/util/Immediate.js
 var require_Immediate = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/Immediate.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/Immediate.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.TestTools = exports2.Immediate = void 0;
@@ -121488,9 +123875,9 @@ var require_Immediate = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/immediateProvider.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/immediateProvider.js
 var require_immediateProvider = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/immediateProvider.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/immediateProvider.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -121537,9 +123924,9 @@ var require_immediateProvider = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/AsapAction.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/AsapAction.js
 var require_AsapAction = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/AsapAction.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/AsapAction.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121605,9 +123992,9 @@ var require_AsapAction = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/Scheduler.js
+// node_modules/rxjs/dist/cjs/internal/Scheduler.js
 var require_Scheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/Scheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/Scheduler.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Scheduler = void 0;
@@ -121633,9 +124020,9 @@ var require_Scheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/AsyncScheduler.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/AsyncScheduler.js
 var require_AsyncScheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/AsyncScheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/AsyncScheduler.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121697,9 +124084,9 @@ var require_AsyncScheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/AsapScheduler.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/AsapScheduler.js
 var require_AsapScheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/AsapScheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/AsapScheduler.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121754,9 +124141,9 @@ var require_AsapScheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/asap.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/asap.js
 var require_asap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/asap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/asap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.asap = exports2.asapScheduler = void 0;
@@ -121767,9 +124154,9 @@ var require_asap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/async.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/async.js
 var require_async = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/async.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/async.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.async = exports2.asyncScheduler = void 0;
@@ -121780,9 +124167,9 @@ var require_async = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/QueueAction.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/QueueAction.js
 var require_QueueAction = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/QueueAction.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/QueueAction.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121845,9 +124232,9 @@ var require_QueueAction = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/QueueScheduler.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/QueueScheduler.js
 var require_QueueScheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/QueueScheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/QueueScheduler.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121882,9 +124269,9 @@ var require_QueueScheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/queue.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/queue.js
 var require_queue = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/queue.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/queue.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.queue = exports2.queueScheduler = void 0;
@@ -121895,9 +124282,9 @@ var require_queue = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameAction.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameAction.js
 var require_AnimationFrameAction = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameAction.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameAction.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -121963,9 +124350,9 @@ var require_AnimationFrameAction = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameScheduler.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameScheduler.js
 var require_AnimationFrameScheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameScheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/AnimationFrameScheduler.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -122025,9 +124412,9 @@ var require_AnimationFrameScheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/animationFrame.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/animationFrame.js
 var require_animationFrame = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/animationFrame.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/animationFrame.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.animationFrame = exports2.animationFrameScheduler = void 0;
@@ -122038,9 +124425,9 @@ var require_animationFrame = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduler/VirtualTimeScheduler.js
+// node_modules/rxjs/dist/cjs/internal/scheduler/VirtualTimeScheduler.js
 var require_VirtualTimeScheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduler/VirtualTimeScheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduler/VirtualTimeScheduler.js"(exports2) {
     "use strict";
     var __extends = exports2 && exports2.__extends || /* @__PURE__ */ (function() {
       var extendStatics = function(d, b) {
@@ -122177,9 +124564,9 @@ var require_VirtualTimeScheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/empty.js
+// node_modules/rxjs/dist/cjs/internal/observable/empty.js
 var require_empty = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/empty.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/empty.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.empty = exports2.EMPTY = void 0;
@@ -122201,9 +124588,9 @@ var require_empty = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isScheduler.js
+// node_modules/rxjs/dist/cjs/internal/util/isScheduler.js
 var require_isScheduler = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isScheduler.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isScheduler.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isScheduler = void 0;
@@ -122215,9 +124602,9 @@ var require_isScheduler = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/args.js
+// node_modules/rxjs/dist/cjs/internal/util/args.js
 var require_args = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/args.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/args.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.popNumber = exports2.popScheduler = exports2.popResultSelector = void 0;
@@ -122241,9 +124628,9 @@ var require_args = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isArrayLike.js
+// node_modules/rxjs/dist/cjs/internal/util/isArrayLike.js
 var require_isArrayLike = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isArrayLike.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isArrayLike.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isArrayLike = void 0;
@@ -122253,9 +124640,9 @@ var require_isArrayLike = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isPromise.js
+// node_modules/rxjs/dist/cjs/internal/util/isPromise.js
 var require_isPromise = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isPromise.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isPromise.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isPromise = void 0;
@@ -122267,9 +124654,9 @@ var require_isPromise = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isInteropObservable.js
+// node_modules/rxjs/dist/cjs/internal/util/isInteropObservable.js
 var require_isInteropObservable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isInteropObservable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isInteropObservable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isInteropObservable = void 0;
@@ -122282,9 +124669,9 @@ var require_isInteropObservable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isAsyncIterable.js
+// node_modules/rxjs/dist/cjs/internal/util/isAsyncIterable.js
 var require_isAsyncIterable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isAsyncIterable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isAsyncIterable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isAsyncIterable = void 0;
@@ -122296,9 +124683,9 @@ var require_isAsyncIterable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/throwUnobservableError.js
+// node_modules/rxjs/dist/cjs/internal/util/throwUnobservableError.js
 var require_throwUnobservableError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/throwUnobservableError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/throwUnobservableError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createInvalidObservableTypeError = void 0;
@@ -122309,9 +124696,9 @@ var require_throwUnobservableError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/symbol/iterator.js
+// node_modules/rxjs/dist/cjs/internal/symbol/iterator.js
 var require_iterator = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/symbol/iterator.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/symbol/iterator.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.iterator = exports2.getSymbolIterator = void 0;
@@ -122326,9 +124713,9 @@ var require_iterator = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isIterable.js
+// node_modules/rxjs/dist/cjs/internal/util/isIterable.js
 var require_isIterable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isIterable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isIterable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isIterable = void 0;
@@ -122341,9 +124728,9 @@ var require_isIterable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isReadableStreamLike.js
+// node_modules/rxjs/dist/cjs/internal/util/isReadableStreamLike.js
 var require_isReadableStreamLike = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isReadableStreamLike.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isReadableStreamLike.js"(exports2) {
     "use strict";
     var __generator = exports2 && exports2.__generator || function(thisArg, body) {
       var _ = { label: 0, sent: function() {
@@ -122499,9 +124886,9 @@ var require_isReadableStreamLike = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/innerFrom.js
+// node_modules/rxjs/dist/cjs/internal/observable/innerFrom.js
 var require_innerFrom = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/innerFrom.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/innerFrom.js"(exports2) {
     "use strict";
     var __awaiter = exports2 && exports2.__awaiter || function(thisArg, _arguments, P, generator) {
       function adopt(value) {
@@ -122790,9 +125177,9 @@ var require_innerFrom = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/executeSchedule.js
+// node_modules/rxjs/dist/cjs/internal/util/executeSchedule.js
 var require_executeSchedule = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/executeSchedule.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/executeSchedule.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.executeSchedule = void 0;
@@ -122820,9 +125207,9 @@ var require_executeSchedule = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/observeOn.js
+// node_modules/rxjs/dist/cjs/internal/operators/observeOn.js
 var require_observeOn = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/observeOn.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/observeOn.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.observeOn = void 0;
@@ -122853,9 +125240,9 @@ var require_observeOn = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/subscribeOn.js
+// node_modules/rxjs/dist/cjs/internal/operators/subscribeOn.js
 var require_subscribeOn = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/subscribeOn.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/subscribeOn.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.subscribeOn = void 0;
@@ -122874,9 +125261,9 @@ var require_subscribeOn = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleObservable.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/scheduleObservable.js
 var require_scheduleObservable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleObservable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/scheduleObservable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scheduleObservable = void 0;
@@ -122890,9 +125277,9 @@ var require_scheduleObservable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/schedulePromise.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/schedulePromise.js
 var require_schedulePromise = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/schedulePromise.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/schedulePromise.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.schedulePromise = void 0;
@@ -122906,9 +125293,9 @@ var require_schedulePromise = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleArray.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/scheduleArray.js
 var require_scheduleArray = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleArray.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/scheduleArray.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scheduleArray = void 0;
@@ -122932,9 +125319,9 @@ var require_scheduleArray = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleIterable.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/scheduleIterable.js
 var require_scheduleIterable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleIterable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/scheduleIterable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scheduleIterable = void 0;
@@ -122973,9 +125360,9 @@ var require_scheduleIterable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleAsyncIterable.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/scheduleAsyncIterable.js
 var require_scheduleAsyncIterable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleAsyncIterable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/scheduleAsyncIterable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scheduleAsyncIterable = void 0;
@@ -123004,9 +125391,9 @@ var require_scheduleAsyncIterable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleReadableStreamLike.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/scheduleReadableStreamLike.js
 var require_scheduleReadableStreamLike = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduleReadableStreamLike.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/scheduleReadableStreamLike.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scheduleReadableStreamLike = void 0;
@@ -123019,9 +125406,9 @@ var require_scheduleReadableStreamLike = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduled.js
+// node_modules/rxjs/dist/cjs/internal/scheduled/scheduled.js
 var require_scheduled = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/scheduled/scheduled.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/scheduled/scheduled.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scheduled = void 0;
@@ -123065,9 +125452,9 @@ var require_scheduled = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/from.js
+// node_modules/rxjs/dist/cjs/internal/observable/from.js
 var require_from = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/from.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/from.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.from = void 0;
@@ -123080,9 +125467,9 @@ var require_from = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/of.js
+// node_modules/rxjs/dist/cjs/internal/observable/of.js
 var require_of = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/of.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/of.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.of = void 0;
@@ -123100,9 +125487,9 @@ var require_of = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/throwError.js
+// node_modules/rxjs/dist/cjs/internal/observable/throwError.js
 var require_throwError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/throwError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/throwError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.throwError = void 0;
@@ -123123,9 +125510,9 @@ var require_throwError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/Notification.js
+// node_modules/rxjs/dist/cjs/internal/Notification.js
 var require_Notification = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/Notification.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/Notification.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.observeNotification = exports2.Notification = exports2.NotificationKind = void 0;
@@ -123192,9 +125579,9 @@ var require_Notification = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isObservable.js
+// node_modules/rxjs/dist/cjs/internal/util/isObservable.js
 var require_isObservable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isObservable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isObservable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isObservable = void 0;
@@ -123207,9 +125594,9 @@ var require_isObservable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/EmptyError.js
+// node_modules/rxjs/dist/cjs/internal/util/EmptyError.js
 var require_EmptyError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/EmptyError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/EmptyError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.EmptyError = void 0;
@@ -123224,9 +125611,9 @@ var require_EmptyError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/lastValueFrom.js
+// node_modules/rxjs/dist/cjs/internal/lastValueFrom.js
 var require_lastValueFrom = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/lastValueFrom.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/lastValueFrom.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.lastValueFrom = void 0;
@@ -123258,9 +125645,9 @@ var require_lastValueFrom = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/firstValueFrom.js
+// node_modules/rxjs/dist/cjs/internal/firstValueFrom.js
 var require_firstValueFrom = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/firstValueFrom.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/firstValueFrom.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.firstValueFrom = void 0;
@@ -123290,9 +125677,9 @@ var require_firstValueFrom = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/ArgumentOutOfRangeError.js
+// node_modules/rxjs/dist/cjs/internal/util/ArgumentOutOfRangeError.js
 var require_ArgumentOutOfRangeError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/ArgumentOutOfRangeError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/ArgumentOutOfRangeError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ArgumentOutOfRangeError = void 0;
@@ -123307,9 +125694,9 @@ var require_ArgumentOutOfRangeError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/NotFoundError.js
+// node_modules/rxjs/dist/cjs/internal/util/NotFoundError.js
 var require_NotFoundError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/NotFoundError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/NotFoundError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.NotFoundError = void 0;
@@ -123324,9 +125711,9 @@ var require_NotFoundError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/SequenceError.js
+// node_modules/rxjs/dist/cjs/internal/util/SequenceError.js
 var require_SequenceError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/SequenceError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/SequenceError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.SequenceError = void 0;
@@ -123341,9 +125728,9 @@ var require_SequenceError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/isDate.js
+// node_modules/rxjs/dist/cjs/internal/util/isDate.js
 var require_isDate = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/isDate.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/isDate.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isValidDate = void 0;
@@ -123354,9 +125741,9 @@ var require_isDate = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/timeout.js
+// node_modules/rxjs/dist/cjs/internal/operators/timeout.js
 var require_timeout = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/timeout.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/timeout.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.timeout = exports2.TimeoutError = void 0;
@@ -123423,9 +125810,9 @@ var require_timeout = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/map.js
+// node_modules/rxjs/dist/cjs/internal/operators/map.js
 var require_map = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/map.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/map.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.map = void 0;
@@ -123443,9 +125830,9 @@ var require_map = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/mapOneOrManyArgs.js
+// node_modules/rxjs/dist/cjs/internal/util/mapOneOrManyArgs.js
 var require_mapOneOrManyArgs = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/mapOneOrManyArgs.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/mapOneOrManyArgs.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -123485,9 +125872,9 @@ var require_mapOneOrManyArgs = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/bindCallbackInternals.js
+// node_modules/rxjs/dist/cjs/internal/observable/bindCallbackInternals.js
 var require_bindCallbackInternals = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/bindCallbackInternals.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/bindCallbackInternals.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -123589,9 +125976,9 @@ var require_bindCallbackInternals = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/bindCallback.js
+// node_modules/rxjs/dist/cjs/internal/observable/bindCallback.js
 var require_bindCallback = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/bindCallback.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/bindCallback.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.bindCallback = void 0;
@@ -123603,9 +125990,9 @@ var require_bindCallback = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/bindNodeCallback.js
+// node_modules/rxjs/dist/cjs/internal/observable/bindNodeCallback.js
 var require_bindNodeCallback = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/bindNodeCallback.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/bindNodeCallback.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.bindNodeCallback = void 0;
@@ -123617,9 +126004,9 @@ var require_bindNodeCallback = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/argsArgArrayOrObject.js
+// node_modules/rxjs/dist/cjs/internal/util/argsArgArrayOrObject.js
 var require_argsArgArrayOrObject = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/argsArgArrayOrObject.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/argsArgArrayOrObject.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.argsArgArrayOrObject = void 0;
@@ -123652,9 +126039,9 @@ var require_argsArgArrayOrObject = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/createObject.js
+// node_modules/rxjs/dist/cjs/internal/util/createObject.js
 var require_createObject = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/createObject.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/createObject.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createObject = void 0;
@@ -123667,9 +126054,9 @@ var require_createObject = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/combineLatest.js
+// node_modules/rxjs/dist/cjs/internal/observable/combineLatest.js
 var require_combineLatest = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/combineLatest.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/combineLatest.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.combineLatestInit = exports2.combineLatest = void 0;
@@ -123746,9 +126133,9 @@ var require_combineLatest = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mergeInternals.js
+// node_modules/rxjs/dist/cjs/internal/operators/mergeInternals.js
 var require_mergeInternals = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mergeInternals.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mergeInternals.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mergeInternals = void 0;
@@ -123817,9 +126204,9 @@ var require_mergeInternals = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mergeMap.js
+// node_modules/rxjs/dist/cjs/internal/operators/mergeMap.js
 var require_mergeMap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mergeMap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mergeMap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mergeMap = void 0;
@@ -123849,9 +126236,9 @@ var require_mergeMap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mergeAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/mergeAll.js
 var require_mergeAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mergeAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mergeAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mergeAll = void 0;
@@ -123867,9 +126254,9 @@ var require_mergeAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/concatAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/concatAll.js
 var require_concatAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/concatAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/concatAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.concatAll = void 0;
@@ -123881,9 +126268,9 @@ var require_concatAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/concat.js
+// node_modules/rxjs/dist/cjs/internal/observable/concat.js
 var require_concat = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/concat.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/concat.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.concat = void 0;
@@ -123901,9 +126288,9 @@ var require_concat = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/defer.js
+// node_modules/rxjs/dist/cjs/internal/observable/defer.js
 var require_defer = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/defer.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/defer.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.defer = void 0;
@@ -123918,9 +126305,9 @@ var require_defer = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/connectable.js
+// node_modules/rxjs/dist/cjs/internal/observable/connectable.js
 var require_connectable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/connectable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/connectable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.connectable = void 0;
@@ -123962,9 +126349,9 @@ var require_connectable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/forkJoin.js
+// node_modules/rxjs/dist/cjs/internal/observable/forkJoin.js
 var require_forkJoin = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/forkJoin.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/forkJoin.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.forkJoin = void 0;
@@ -124020,9 +126407,9 @@ var require_forkJoin = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/fromEvent.js
+// node_modules/rxjs/dist/cjs/internal/observable/fromEvent.js
 var require_fromEvent = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/fromEvent.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/fromEvent.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -124109,9 +126496,9 @@ var require_fromEvent = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/fromEventPattern.js
+// node_modules/rxjs/dist/cjs/internal/observable/fromEventPattern.js
 var require_fromEventPattern = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/fromEventPattern.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/fromEventPattern.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.fromEventPattern = void 0;
@@ -124140,9 +126527,9 @@ var require_fromEventPattern = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/generate.js
+// node_modules/rxjs/dist/cjs/internal/observable/generate.js
 var require_generate = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/generate.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/generate.js"(exports2) {
     "use strict";
     var __generator = exports2 && exports2.__generator || function(thisArg, body) {
       var _ = { label: 0, sent: function() {
@@ -124263,9 +126650,9 @@ var require_generate = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/iif.js
+// node_modules/rxjs/dist/cjs/internal/observable/iif.js
 var require_iif = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/iif.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/iif.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.iif = void 0;
@@ -124279,9 +126666,9 @@ var require_iif = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/timer.js
+// node_modules/rxjs/dist/cjs/internal/observable/timer.js
 var require_timer = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/timer.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/timer.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.timer = void 0;
@@ -124326,9 +126713,9 @@ var require_timer = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/interval.js
+// node_modules/rxjs/dist/cjs/internal/observable/interval.js
 var require_interval = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/interval.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/interval.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.interval = void 0;
@@ -124350,9 +126737,9 @@ var require_interval = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/merge.js
+// node_modules/rxjs/dist/cjs/internal/observable/merge.js
 var require_merge = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/merge.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/merge.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.merge = void 0;
@@ -124375,9 +126762,9 @@ var require_merge = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/never.js
+// node_modules/rxjs/dist/cjs/internal/observable/never.js
 var require_never = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/never.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/never.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.never = exports2.NEVER = void 0;
@@ -124391,9 +126778,9 @@ var require_never = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/argsOrArgArray.js
+// node_modules/rxjs/dist/cjs/internal/util/argsOrArgArray.js
 var require_argsOrArgArray = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/argsOrArgArray.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/argsOrArgArray.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.argsOrArgArray = void 0;
@@ -124405,9 +126792,9 @@ var require_argsOrArgArray = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/onErrorResumeNext.js
+// node_modules/rxjs/dist/cjs/internal/observable/onErrorResumeNext.js
 var require_onErrorResumeNext = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/onErrorResumeNext.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/onErrorResumeNext.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.onErrorResumeNext = void 0;
@@ -124447,9 +126834,9 @@ var require_onErrorResumeNext = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/pairs.js
+// node_modules/rxjs/dist/cjs/internal/observable/pairs.js
 var require_pairs = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/pairs.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/pairs.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.pairs = void 0;
@@ -124461,9 +126848,9 @@ var require_pairs = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/util/not.js
+// node_modules/rxjs/dist/cjs/internal/util/not.js
 var require_not = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/util/not.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/util/not.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.not = void 0;
@@ -124476,9 +126863,9 @@ var require_not = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/filter.js
+// node_modules/rxjs/dist/cjs/internal/operators/filter.js
 var require_filter = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/filter.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/filter.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.filter = void 0;
@@ -124496,9 +126883,9 @@ var require_filter = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/partition.js
+// node_modules/rxjs/dist/cjs/internal/observable/partition.js
 var require_partition = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/partition.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/partition.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.partition = void 0;
@@ -124512,9 +126899,9 @@ var require_partition = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/race.js
+// node_modules/rxjs/dist/cjs/internal/observable/race.js
 var require_race = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/race.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/race.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.raceInit = exports2.race = void 0;
@@ -124554,9 +126941,9 @@ var require_race = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/range.js
+// node_modules/rxjs/dist/cjs/internal/observable/range.js
 var require_range = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/range.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/range.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.range = void 0;
@@ -124593,9 +126980,9 @@ var require_range = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/using.js
+// node_modules/rxjs/dist/cjs/internal/observable/using.js
 var require_using = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/using.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/using.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.using = void 0;
@@ -124619,9 +127006,9 @@ var require_using = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/zip.js
+// node_modules/rxjs/dist/cjs/internal/observable/zip.js
 var require_zip = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/zip.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/zip.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -124703,17 +127090,17 @@ var require_zip = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/types.js
+// node_modules/rxjs/dist/cjs/internal/types.js
 var require_types = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/types.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/types.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/audit.js
+// node_modules/rxjs/dist/cjs/internal/operators/audit.js
 var require_audit = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/audit.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/audit.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.audit = void 0;
@@ -124757,9 +127144,9 @@ var require_audit = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/auditTime.js
+// node_modules/rxjs/dist/cjs/internal/operators/auditTime.js
 var require_auditTime = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/auditTime.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/auditTime.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.auditTime = void 0;
@@ -124778,9 +127165,9 @@ var require_auditTime = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/buffer.js
+// node_modules/rxjs/dist/cjs/internal/operators/buffer.js
 var require_buffer = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/buffer.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/buffer.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.buffer = void 0;
@@ -124811,9 +127198,9 @@ var require_buffer = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/bufferCount.js
+// node_modules/rxjs/dist/cjs/internal/operators/bufferCount.js
 var require_bufferCount = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/bufferCount.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/bufferCount.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -124906,9 +127293,9 @@ var require_bufferCount = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/bufferTime.js
+// node_modules/rxjs/dist/cjs/internal/operators/bufferTime.js
 var require_bufferTime = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/bufferTime.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/bufferTime.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -125006,9 +127393,9 @@ var require_bufferTime = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/bufferToggle.js
+// node_modules/rxjs/dist/cjs/internal/operators/bufferToggle.js
 var require_bufferToggle = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/bufferToggle.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/bufferToggle.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -125071,9 +127458,9 @@ var require_bufferToggle = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/bufferWhen.js
+// node_modules/rxjs/dist/cjs/internal/operators/bufferWhen.js
 var require_bufferWhen = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/bufferWhen.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/bufferWhen.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.bufferWhen = void 0;
@@ -125107,9 +127494,9 @@ var require_bufferWhen = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/catchError.js
+// node_modules/rxjs/dist/cjs/internal/operators/catchError.js
 var require_catchError = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/catchError.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/catchError.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.catchError = void 0;
@@ -125142,9 +127529,9 @@ var require_catchError = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/scanInternals.js
+// node_modules/rxjs/dist/cjs/internal/operators/scanInternals.js
 var require_scanInternals = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/scanInternals.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/scanInternals.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scanInternals = void 0;
@@ -125168,9 +127555,9 @@ var require_scanInternals = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/reduce.js
+// node_modules/rxjs/dist/cjs/internal/operators/reduce.js
 var require_reduce = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/reduce.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/reduce.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.reduce = void 0;
@@ -125183,9 +127570,9 @@ var require_reduce = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/toArray.js
+// node_modules/rxjs/dist/cjs/internal/operators/toArray.js
 var require_toArray = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/toArray.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/toArray.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.toArray = void 0;
@@ -125203,9 +127590,9 @@ var require_toArray = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/joinAllInternals.js
+// node_modules/rxjs/dist/cjs/internal/operators/joinAllInternals.js
 var require_joinAllInternals = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/joinAllInternals.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/joinAllInternals.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.joinAllInternals = void 0;
@@ -125223,9 +127610,9 @@ var require_joinAllInternals = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/combineLatestAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/combineLatestAll.js
 var require_combineLatestAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/combineLatestAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/combineLatestAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.combineLatestAll = void 0;
@@ -125238,9 +127625,9 @@ var require_combineLatestAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/combineAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/combineAll.js
 var require_combineAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/combineAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/combineAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.combineAll = void 0;
@@ -125249,9 +127636,9 @@ var require_combineAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/combineLatest.js
+// node_modules/rxjs/dist/cjs/internal/operators/combineLatest.js
 var require_combineLatest2 = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/combineLatest.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/combineLatest.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -125297,9 +127684,9 @@ var require_combineLatest2 = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/combineLatestWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/combineLatestWith.js
 var require_combineLatestWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/combineLatestWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/combineLatestWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -125337,9 +127724,9 @@ var require_combineLatestWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/concatMap.js
+// node_modules/rxjs/dist/cjs/internal/operators/concatMap.js
 var require_concatMap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/concatMap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/concatMap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.concatMap = void 0;
@@ -125352,9 +127739,9 @@ var require_concatMap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/concatMapTo.js
+// node_modules/rxjs/dist/cjs/internal/operators/concatMapTo.js
 var require_concatMapTo = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/concatMapTo.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/concatMapTo.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.concatMapTo = void 0;
@@ -125371,9 +127758,9 @@ var require_concatMapTo = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/concat.js
+// node_modules/rxjs/dist/cjs/internal/operators/concat.js
 var require_concat2 = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/concat.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/concat.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -125417,9 +127804,9 @@ var require_concat2 = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/concatWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/concatWith.js
 var require_concatWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/concatWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/concatWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -125457,9 +127844,9 @@ var require_concatWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/observable/fromSubscribable.js
+// node_modules/rxjs/dist/cjs/internal/observable/fromSubscribable.js
 var require_fromSubscribable = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/observable/fromSubscribable.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/observable/fromSubscribable.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.fromSubscribable = void 0;
@@ -125473,9 +127860,9 @@ var require_fromSubscribable = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/connect.js
+// node_modules/rxjs/dist/cjs/internal/operators/connect.js
 var require_connect = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/connect.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/connect.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.connect = void 0;
@@ -125503,9 +127890,9 @@ var require_connect = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/count.js
+// node_modules/rxjs/dist/cjs/internal/operators/count.js
 var require_count = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/count.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/count.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.count = void 0;
@@ -125519,9 +127906,9 @@ var require_count = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/debounce.js
+// node_modules/rxjs/dist/cjs/internal/operators/debounce.js
 var require_debounce = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/debounce.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/debounce.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.debounce = void 0;
@@ -125562,9 +127949,9 @@ var require_debounce = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/debounceTime.js
+// node_modules/rxjs/dist/cjs/internal/operators/debounceTime.js
 var require_debounceTime = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/debounceTime.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/debounceTime.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.debounceTime = void 0;
@@ -125617,9 +128004,9 @@ var require_debounceTime = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/defaultIfEmpty.js
+// node_modules/rxjs/dist/cjs/internal/operators/defaultIfEmpty.js
 var require_defaultIfEmpty = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/defaultIfEmpty.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/defaultIfEmpty.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.defaultIfEmpty = void 0;
@@ -125643,9 +128030,9 @@ var require_defaultIfEmpty = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/take.js
+// node_modules/rxjs/dist/cjs/internal/operators/take.js
 var require_take = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/take.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/take.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.take = void 0;
@@ -125671,9 +128058,9 @@ var require_take = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/ignoreElements.js
+// node_modules/rxjs/dist/cjs/internal/operators/ignoreElements.js
 var require_ignoreElements = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/ignoreElements.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/ignoreElements.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ignoreElements = void 0;
@@ -125689,9 +128076,9 @@ var require_ignoreElements = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mapTo.js
+// node_modules/rxjs/dist/cjs/internal/operators/mapTo.js
 var require_mapTo = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mapTo.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mapTo.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mapTo = void 0;
@@ -125705,9 +128092,9 @@ var require_mapTo = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/delayWhen.js
+// node_modules/rxjs/dist/cjs/internal/operators/delayWhen.js
 var require_delayWhen = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/delayWhen.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/delayWhen.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.delayWhen = void 0;
@@ -125731,9 +128118,9 @@ var require_delayWhen = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/delay.js
+// node_modules/rxjs/dist/cjs/internal/operators/delay.js
 var require_delay = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/delay.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/delay.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.delay = void 0;
@@ -125753,9 +128140,9 @@ var require_delay = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/dematerialize.js
+// node_modules/rxjs/dist/cjs/internal/operators/dematerialize.js
 var require_dematerialize = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/dematerialize.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/dematerialize.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.dematerialize = void 0;
@@ -125773,9 +128160,9 @@ var require_dematerialize = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/distinct.js
+// node_modules/rxjs/dist/cjs/internal/operators/distinct.js
 var require_distinct = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/distinct.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/distinct.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.distinct = void 0;
@@ -125802,9 +128189,9 @@ var require_distinct = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/distinctUntilChanged.js
+// node_modules/rxjs/dist/cjs/internal/operators/distinctUntilChanged.js
 var require_distinctUntilChanged = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/distinctUntilChanged.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/distinctUntilChanged.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.distinctUntilChanged = void 0;
@@ -125836,9 +128223,9 @@ var require_distinctUntilChanged = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/distinctUntilKeyChanged.js
+// node_modules/rxjs/dist/cjs/internal/operators/distinctUntilKeyChanged.js
 var require_distinctUntilKeyChanged = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/distinctUntilKeyChanged.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/distinctUntilKeyChanged.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.distinctUntilKeyChanged = void 0;
@@ -125852,9 +128239,9 @@ var require_distinctUntilKeyChanged = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/throwIfEmpty.js
+// node_modules/rxjs/dist/cjs/internal/operators/throwIfEmpty.js
 var require_throwIfEmpty = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/throwIfEmpty.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/throwIfEmpty.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.throwIfEmpty = void 0;
@@ -125882,9 +128269,9 @@ var require_throwIfEmpty = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/elementAt.js
+// node_modules/rxjs/dist/cjs/internal/operators/elementAt.js
 var require_elementAt = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/elementAt.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/elementAt.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.elementAt = void 0;
@@ -125910,9 +128297,9 @@ var require_elementAt = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/endWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/endWith.js
 var require_endWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/endWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/endWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -125953,9 +128340,9 @@ var require_endWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/every.js
+// node_modules/rxjs/dist/cjs/internal/operators/every.js
 var require_every = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/every.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/every.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.every = void 0;
@@ -125979,9 +128366,9 @@ var require_every = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/exhaustMap.js
+// node_modules/rxjs/dist/cjs/internal/operators/exhaustMap.js
 var require_exhaustMap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/exhaustMap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/exhaustMap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.exhaustMap = void 0;
@@ -126021,9 +128408,9 @@ var require_exhaustMap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/exhaustAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/exhaustAll.js
 var require_exhaustAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/exhaustAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/exhaustAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.exhaustAll = void 0;
@@ -126036,9 +128423,9 @@ var require_exhaustAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/exhaust.js
+// node_modules/rxjs/dist/cjs/internal/operators/exhaust.js
 var require_exhaust = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/exhaust.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/exhaust.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.exhaust = void 0;
@@ -126047,9 +128434,9 @@ var require_exhaust = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/expand.js
+// node_modules/rxjs/dist/cjs/internal/operators/expand.js
 var require_expand = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/expand.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/expand.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.expand = void 0;
@@ -126068,9 +128455,9 @@ var require_expand = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/finalize.js
+// node_modules/rxjs/dist/cjs/internal/operators/finalize.js
 var require_finalize = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/finalize.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/finalize.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.finalize = void 0;
@@ -126088,9 +128475,9 @@ var require_finalize = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/find.js
+// node_modules/rxjs/dist/cjs/internal/operators/find.js
 var require_find = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/find.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/find.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createFind = exports2.find = void 0;
@@ -126120,9 +128507,9 @@ var require_find = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/findIndex.js
+// node_modules/rxjs/dist/cjs/internal/operators/findIndex.js
 var require_findIndex = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/findIndex.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/findIndex.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.findIndex = void 0;
@@ -126135,9 +128522,9 @@ var require_findIndex = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/first.js
+// node_modules/rxjs/dist/cjs/internal/operators/first.js
 var require_first = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/first.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/first.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.first = void 0;
@@ -126161,9 +128548,9 @@ var require_first = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/groupBy.js
+// node_modules/rxjs/dist/cjs/internal/operators/groupBy.js
 var require_groupBy = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/groupBy.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/groupBy.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.groupBy = void 0;
@@ -126243,9 +128630,9 @@ var require_groupBy = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/isEmpty.js
+// node_modules/rxjs/dist/cjs/internal/operators/isEmpty.js
 var require_isEmpty = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/isEmpty.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/isEmpty.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isEmpty = void 0;
@@ -126266,9 +128653,9 @@ var require_isEmpty = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/takeLast.js
+// node_modules/rxjs/dist/cjs/internal/operators/takeLast.js
 var require_takeLast = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/takeLast.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/takeLast.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -126320,9 +128707,9 @@ var require_takeLast = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/last.js
+// node_modules/rxjs/dist/cjs/internal/operators/last.js
 var require_last = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/last.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/last.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.last = void 0;
@@ -126346,9 +128733,9 @@ var require_last = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/materialize.js
+// node_modules/rxjs/dist/cjs/internal/operators/materialize.js
 var require_materialize = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/materialize.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/materialize.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.materialize = void 0;
@@ -126372,9 +128759,9 @@ var require_materialize = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/max.js
+// node_modules/rxjs/dist/cjs/internal/operators/max.js
 var require_max = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/max.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/max.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.max = void 0;
@@ -126391,9 +128778,9 @@ var require_max = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/flatMap.js
+// node_modules/rxjs/dist/cjs/internal/operators/flatMap.js
 var require_flatMap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/flatMap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/flatMap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.flatMap = void 0;
@@ -126402,9 +128789,9 @@ var require_flatMap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mergeMapTo.js
+// node_modules/rxjs/dist/cjs/internal/operators/mergeMapTo.js
 var require_mergeMapTo = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mergeMapTo.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mergeMapTo.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mergeMapTo = void 0;
@@ -126430,9 +128817,9 @@ var require_mergeMapTo = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mergeScan.js
+// node_modules/rxjs/dist/cjs/internal/operators/mergeScan.js
 var require_mergeScan = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mergeScan.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mergeScan.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mergeScan = void 0;
@@ -126457,9 +128844,9 @@ var require_mergeScan = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/merge.js
+// node_modules/rxjs/dist/cjs/internal/operators/merge.js
 var require_merge2 = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/merge.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/merge.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -126504,9 +128891,9 @@ var require_merge2 = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/mergeWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/mergeWith.js
 var require_mergeWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/mergeWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/mergeWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -126544,9 +128931,9 @@ var require_mergeWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/min.js
+// node_modules/rxjs/dist/cjs/internal/operators/min.js
 var require_min = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/min.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/min.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.min = void 0;
@@ -126563,9 +128950,9 @@ var require_min = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/multicast.js
+// node_modules/rxjs/dist/cjs/internal/operators/multicast.js
 var require_multicast = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/multicast.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/multicast.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.multicast = void 0;
@@ -126589,9 +128976,9 @@ var require_multicast = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/onErrorResumeNextWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/onErrorResumeNextWith.js
 var require_onErrorResumeNextWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/onErrorResumeNextWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/onErrorResumeNextWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -126634,9 +129021,9 @@ var require_onErrorResumeNextWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/pairwise.js
+// node_modules/rxjs/dist/cjs/internal/operators/pairwise.js
 var require_pairwise = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/pairwise.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/pairwise.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.pairwise = void 0;
@@ -126658,9 +129045,9 @@ var require_pairwise = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/pluck.js
+// node_modules/rxjs/dist/cjs/internal/operators/pluck.js
 var require_pluck = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/pluck.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/pluck.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.pluck = void 0;
@@ -126691,9 +129078,9 @@ var require_pluck = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/publish.js
+// node_modules/rxjs/dist/cjs/internal/operators/publish.js
 var require_publish = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/publish.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/publish.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.publish = void 0;
@@ -126711,9 +129098,9 @@ var require_publish = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/publishBehavior.js
+// node_modules/rxjs/dist/cjs/internal/operators/publishBehavior.js
 var require_publishBehavior = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/publishBehavior.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/publishBehavior.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.publishBehavior = void 0;
@@ -126731,9 +129118,9 @@ var require_publishBehavior = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/publishLast.js
+// node_modules/rxjs/dist/cjs/internal/operators/publishLast.js
 var require_publishLast = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/publishLast.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/publishLast.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.publishLast = void 0;
@@ -126751,9 +129138,9 @@ var require_publishLast = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/publishReplay.js
+// node_modules/rxjs/dist/cjs/internal/operators/publishReplay.js
 var require_publishReplay = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/publishReplay.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/publishReplay.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.publishReplay = void 0;
@@ -126773,9 +129160,9 @@ var require_publishReplay = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/raceWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/raceWith.js
 var require_raceWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/raceWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/raceWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -126817,9 +129204,9 @@ var require_raceWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/repeat.js
+// node_modules/rxjs/dist/cjs/internal/operators/repeat.js
 var require_repeat = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/repeat.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/repeat.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.repeat = void 0;
@@ -126882,9 +129269,9 @@ var require_repeat = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/repeatWhen.js
+// node_modules/rxjs/dist/cjs/internal/operators/repeatWhen.js
 var require_repeatWhen = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/repeatWhen.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/repeatWhen.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.repeatWhen = void 0;
@@ -126938,9 +129325,9 @@ var require_repeatWhen = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/retry.js
+// node_modules/rxjs/dist/cjs/internal/operators/retry.js
 var require_retry = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/retry.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/retry.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.retry = void 0;
@@ -127012,9 +129399,9 @@ var require_retry = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/retryWhen.js
+// node_modules/rxjs/dist/cjs/internal/operators/retryWhen.js
 var require_retryWhen = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/retryWhen.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/retryWhen.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.retryWhen = void 0;
@@ -127053,9 +129440,9 @@ var require_retryWhen = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/sample.js
+// node_modules/rxjs/dist/cjs/internal/operators/sample.js
 var require_sample = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/sample.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/sample.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.sample = void 0;
@@ -127085,9 +129472,9 @@ var require_sample = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/sampleTime.js
+// node_modules/rxjs/dist/cjs/internal/operators/sampleTime.js
 var require_sampleTime = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/sampleTime.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/sampleTime.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.sampleTime = void 0;
@@ -127104,9 +129491,9 @@ var require_sampleTime = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/scan.js
+// node_modules/rxjs/dist/cjs/internal/operators/scan.js
 var require_scan = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/scan.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/scan.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.scan = void 0;
@@ -127119,9 +129506,9 @@ var require_scan = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/sequenceEqual.js
+// node_modules/rxjs/dist/cjs/internal/operators/sequenceEqual.js
 var require_sequenceEqual = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/sequenceEqual.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/sequenceEqual.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.sequenceEqual = void 0;
@@ -127171,9 +129558,9 @@ var require_sequenceEqual = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/share.js
+// node_modules/rxjs/dist/cjs/internal/operators/share.js
 var require_share = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/share.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/share.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -127291,9 +129678,9 @@ var require_share = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/shareReplay.js
+// node_modules/rxjs/dist/cjs/internal/operators/shareReplay.js
 var require_shareReplay = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/shareReplay.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/shareReplay.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.shareReplay = void 0;
@@ -127321,9 +129708,9 @@ var require_shareReplay = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/single.js
+// node_modules/rxjs/dist/cjs/internal/operators/single.js
 var require_single = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/single.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/single.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.single = void 0;
@@ -127359,9 +129746,9 @@ var require_single = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/skip.js
+// node_modules/rxjs/dist/cjs/internal/operators/skip.js
 var require_skip = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/skip.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/skip.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.skip = void 0;
@@ -127375,9 +129762,9 @@ var require_skip = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/skipLast.js
+// node_modules/rxjs/dist/cjs/internal/operators/skipLast.js
 var require_skipLast = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/skipLast.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/skipLast.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.skipLast = void 0;
@@ -127408,9 +129795,9 @@ var require_skipLast = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/skipUntil.js
+// node_modules/rxjs/dist/cjs/internal/operators/skipUntil.js
 var require_skipUntil = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/skipUntil.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/skipUntil.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.skipUntil = void 0;
@@ -127435,9 +129822,9 @@ var require_skipUntil = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/skipWhile.js
+// node_modules/rxjs/dist/cjs/internal/operators/skipWhile.js
 var require_skipWhile = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/skipWhile.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/skipWhile.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.skipWhile = void 0;
@@ -127456,9 +129843,9 @@ var require_skipWhile = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/startWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/startWith.js
 var require_startWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/startWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/startWith.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.startWith = void 0;
@@ -127479,9 +129866,9 @@ var require_startWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/switchMap.js
+// node_modules/rxjs/dist/cjs/internal/operators/switchMap.js
 var require_switchMap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/switchMap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/switchMap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.switchMap = void 0;
@@ -127516,9 +129903,9 @@ var require_switchMap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/switchAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/switchAll.js
 var require_switchAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/switchAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/switchAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.switchAll = void 0;
@@ -127531,9 +129918,9 @@ var require_switchAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/switchMapTo.js
+// node_modules/rxjs/dist/cjs/internal/operators/switchMapTo.js
 var require_switchMapTo = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/switchMapTo.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/switchMapTo.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.switchMapTo = void 0;
@@ -127550,9 +129937,9 @@ var require_switchMapTo = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/switchScan.js
+// node_modules/rxjs/dist/cjs/internal/operators/switchScan.js
 var require_switchScan = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/switchScan.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/switchScan.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.switchScan = void 0;
@@ -127575,9 +129962,9 @@ var require_switchScan = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/takeUntil.js
+// node_modules/rxjs/dist/cjs/internal/operators/takeUntil.js
 var require_takeUntil = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/takeUntil.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/takeUntil.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.takeUntil = void 0;
@@ -127597,9 +129984,9 @@ var require_takeUntil = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/takeWhile.js
+// node_modules/rxjs/dist/cjs/internal/operators/takeWhile.js
 var require_takeWhile = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/takeWhile.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/takeWhile.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.takeWhile = void 0;
@@ -127622,9 +130009,9 @@ var require_takeWhile = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/tap.js
+// node_modules/rxjs/dist/cjs/internal/operators/tap.js
 var require_tap = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/tap.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/tap.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.tap = void 0;
@@ -127665,9 +130052,9 @@ var require_tap = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/throttle.js
+// node_modules/rxjs/dist/cjs/internal/operators/throttle.js
 var require_throttle = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/throttle.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/throttle.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.throttle = void 0;
@@ -127719,9 +130106,9 @@ var require_throttle = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/throttleTime.js
+// node_modules/rxjs/dist/cjs/internal/operators/throttleTime.js
 var require_throttleTime = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/throttleTime.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/throttleTime.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.throttleTime = void 0;
@@ -127741,9 +130128,9 @@ var require_throttleTime = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/timeInterval.js
+// node_modules/rxjs/dist/cjs/internal/operators/timeInterval.js
 var require_timeInterval = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/timeInterval.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/timeInterval.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.TimeInterval = exports2.timeInterval = void 0;
@@ -127776,9 +130163,9 @@ var require_timeInterval = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/timeoutWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/timeoutWith.js
 var require_timeoutWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/timeoutWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/timeoutWith.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.timeoutWith = void 0;
@@ -127816,9 +130203,9 @@ var require_timeoutWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/timestamp.js
+// node_modules/rxjs/dist/cjs/internal/operators/timestamp.js
 var require_timestamp = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/timestamp.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/timestamp.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.timestamp = void 0;
@@ -127836,9 +130223,9 @@ var require_timestamp = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/window.js
+// node_modules/rxjs/dist/cjs/internal/operators/window.js
 var require_window = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/window.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/window.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.window = void 0;
@@ -127875,9 +130262,9 @@ var require_window = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/windowCount.js
+// node_modules/rxjs/dist/cjs/internal/operators/windowCount.js
 var require_windowCount = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/windowCount.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/windowCount.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -127950,9 +130337,9 @@ var require_windowCount = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/windowTime.js
+// node_modules/rxjs/dist/cjs/internal/operators/windowTime.js
 var require_windowTime = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/windowTime.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/windowTime.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.windowTime = void 0;
@@ -128040,9 +130427,9 @@ var require_windowTime = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/windowToggle.js
+// node_modules/rxjs/dist/cjs/internal/operators/windowToggle.js
 var require_windowToggle = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/windowToggle.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/windowToggle.js"(exports2) {
     "use strict";
     var __values = exports2 && exports2.__values || function(o) {
       var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
@@ -128125,9 +130512,9 @@ var require_windowToggle = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/windowWhen.js
+// node_modules/rxjs/dist/cjs/internal/operators/windowWhen.js
 var require_windowWhen = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/windowWhen.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/windowWhen.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.windowWhen = void 0;
@@ -128173,9 +130560,9 @@ var require_windowWhen = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/withLatestFrom.js
+// node_modules/rxjs/dist/cjs/internal/operators/withLatestFrom.js
 var require_withLatestFrom = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/withLatestFrom.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/withLatestFrom.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -128244,9 +130631,9 @@ var require_withLatestFrom = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/zipAll.js
+// node_modules/rxjs/dist/cjs/internal/operators/zipAll.js
 var require_zipAll = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/zipAll.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/zipAll.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.zipAll = void 0;
@@ -128259,9 +130646,9 @@ var require_zipAll = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/zip.js
+// node_modules/rxjs/dist/cjs/internal/operators/zip.js
 var require_zip2 = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/zip.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/zip.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -128302,9 +130689,9 @@ var require_zip2 = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/internal/operators/zipWith.js
+// node_modules/rxjs/dist/cjs/internal/operators/zipWith.js
 var require_zipWith = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/internal/operators/zipWith.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/internal/operators/zipWith.js"(exports2) {
     "use strict";
     var __read = exports2 && exports2.__read || function(o, n) {
       var m = typeof Symbol === "function" && o[Symbol.iterator];
@@ -128342,9 +130729,9 @@ var require_zipWith = __commonJS({
   }
 });
 
-// ../../node_modules/rxjs/dist/cjs/index.js
+// node_modules/rxjs/dist/cjs/index.js
 var require_cjs = __commonJS({
-  "../../node_modules/rxjs/dist/cjs/index.js"(exports2) {
+  "node_modules/rxjs/dist/cjs/index.js"(exports2) {
     "use strict";
     var __createBinding = exports2 && exports2.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -129183,6 +131570,867 @@ Object.defineProperty(exports, "timer", ({ enumerable: true, get: function() {
 Object.defineProperty(exports, "zip", ({ enumerable: true, get: function() {
   return rxjs_1.zip;
 } }));
+
+
+/***/ }),
+
+/***/ 84268:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+/**
+Copyright 2020 Intel Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+
+// node_modules/urlpattern-polyfill/dist/urlpattern.cjs
+var require_urlpattern = __commonJS({
+  "node_modules/urlpattern-polyfill/dist/urlpattern.cjs"(exports2, module2) {
+    "use strict";
+    var U = Object.defineProperty;
+    var Re = Object.getOwnPropertyDescriptor;
+    var Ee = Object.getOwnPropertyNames;
+    var Oe = Object.prototype.hasOwnProperty;
+    var a = (e, t) => U(e, "name", { value: t, configurable: true });
+    var ke = (e, t) => {
+      for (var r in t) U(e, r, { get: t[r], enumerable: true });
+    };
+    var Te = (e, t, r, n) => {
+      if (t && typeof t == "object" || typeof t == "function") for (let o of Ee(t)) !Oe.call(e, o) && o !== r && U(e, o, { get: () => t[o], enumerable: !(n = Re(t, o)) || n.enumerable });
+      return e;
+    };
+    var Ae = (e) => Te(U({}, "__esModule", { value: true }), e);
+    var He = {};
+    ke(He, { URLPattern: () => M });
+    module2.exports = Ae(He);
+    var P = class {
+      type = 3;
+      name = "";
+      prefix = "";
+      value = "";
+      suffix = "";
+      modifier = 3;
+      constructor(t, r, n, o, l, f) {
+        this.type = t, this.name = r, this.prefix = n, this.value = o, this.suffix = l, this.modifier = f;
+      }
+      hasCustomName() {
+        return this.name !== "" && typeof this.name != "number";
+      }
+    };
+    a(P, "Part");
+    var ye = /[$_\p{ID_Start}]/u;
+    var we = /[$_\u200C\u200D\p{ID_Continue}]/u;
+    var F = ".*";
+    function Ce(e, t) {
+      return (t ? /^[\x00-\xFF]*$/ : /^[\x00-\x7F]*$/).test(e);
+    }
+    a(Ce, "isASCII");
+    function W(e, t = false) {
+      let r = [], n = 0;
+      for (; n < e.length; ) {
+        let o = e[n], l = a(function(f) {
+          if (!t) throw new TypeError(f);
+          r.push({ type: "INVALID_CHAR", index: n, value: e[n++] });
+        }, "ErrorOrInvalid");
+        if (o === "*") {
+          r.push({ type: "ASTERISK", index: n, value: e[n++] });
+          continue;
+        }
+        if (o === "+" || o === "?") {
+          r.push({ type: "OTHER_MODIFIER", index: n, value: e[n++] });
+          continue;
+        }
+        if (o === "\\") {
+          r.push({ type: "ESCAPED_CHAR", index: n++, value: e[n++] });
+          continue;
+        }
+        if (o === "{") {
+          r.push({ type: "OPEN", index: n, value: e[n++] });
+          continue;
+        }
+        if (o === "}") {
+          r.push({ type: "CLOSE", index: n, value: e[n++] });
+          continue;
+        }
+        if (o === ":") {
+          let f = "", s = n + 1;
+          for (; s < e.length; ) {
+            let i = e.substr(s, 1);
+            if (s === n + 1 && ye.test(i) || s !== n + 1 && we.test(i)) {
+              f += e[s++];
+              continue;
+            }
+            break;
+          }
+          if (!f) {
+            l(`Missing parameter name at ${n}`);
+            continue;
+          }
+          r.push({ type: "NAME", index: n, value: f }), n = s;
+          continue;
+        }
+        if (o === "(") {
+          let f = 1, s = "", i = n + 1, c = false;
+          if (e[i] === "?") {
+            l(`Pattern cannot start with "?" at ${i}`);
+            continue;
+          }
+          for (; i < e.length; ) {
+            if (!Ce(e[i], false)) {
+              l(`Invalid character '${e[i]}' at ${i}.`), c = true;
+              break;
+            }
+            if (e[i] === "\\") {
+              s += e[i++] + e[i++];
+              continue;
+            }
+            if (e[i] === ")") {
+              if (f--, f === 0) {
+                i++;
+                break;
+              }
+            } else if (e[i] === "(" && (f++, e[i + 1] !== "?")) {
+              l(`Capturing groups are not allowed at ${i}`), c = true;
+              break;
+            }
+            s += e[i++];
+          }
+          if (c) continue;
+          if (f) {
+            l(`Unbalanced pattern at ${n}`);
+            continue;
+          }
+          if (!s) {
+            l(`Missing pattern at ${n}`);
+            continue;
+          }
+          r.push({ type: "REGEX", index: n, value: s }), n = i;
+          continue;
+        }
+        r.push({ type: "CHAR", index: n, value: e[n++] });
+      }
+      return r.push({ type: "END", index: n, value: "" }), r;
+    }
+    a(W, "lexer");
+    function _(e, t = {}) {
+      let r = W(e);
+      t.delimiter ??= "/#?", t.prefixes ??= "./";
+      let n = `[^${x(t.delimiter)}]+?`, o = [], l = 0, f = 0, s = "", i = /* @__PURE__ */ new Set(), c = a((u) => {
+        if (f < r.length && r[f].type === u) return r[f++].value;
+      }, "tryConsume"), h = a(() => c("OTHER_MODIFIER") ?? c("ASTERISK"), "tryConsumeModifier"), p = a((u) => {
+        let d = c(u);
+        if (d !== void 0) return d;
+        let { type: g, index: y } = r[f];
+        throw new TypeError(`Unexpected ${g} at ${y}, expected ${u}`);
+      }, "mustConsume"), A = a(() => {
+        let u = "", d;
+        for (; d = c("CHAR") ?? c("ESCAPED_CHAR"); ) u += d;
+        return u;
+      }, "consumeText"), be = a((u) => u, "DefaultEncodePart"), N = t.encodePart || be, H = "", v = a((u) => {
+        H += u;
+      }, "appendToPendingFixedValue"), D = a(() => {
+        H.length && (o.push(new P(3, "", "", N(H), "", 3)), H = "");
+      }, "maybeAddPartFromPendingFixedValue"), Z = a((u, d, g, y, B) => {
+        let m = 3;
+        switch (B) {
+          case "?":
+            m = 1;
+            break;
+          case "*":
+            m = 0;
+            break;
+          case "+":
+            m = 2;
+            break;
+        }
+        if (!d && !g && m === 3) {
+          v(u);
+          return;
+        }
+        if (D(), !d && !g) {
+          if (!u) return;
+          o.push(new P(3, "", "", N(u), "", m));
+          return;
+        }
+        let S;
+        g ? g === "*" ? S = F : S = g : S = n;
+        let k = 2;
+        S === n ? (k = 1, S = "") : S === F && (k = 0, S = "");
+        let E;
+        if (d ? E = d : g && (E = l++), i.has(E)) throw new TypeError(`Duplicate name '${E}'.`);
+        i.add(E), o.push(new P(k, E, N(u), S, N(y), m));
+      }, "addPart");
+      for (; f < r.length; ) {
+        let u = c("CHAR"), d = c("NAME"), g = c("REGEX");
+        if (!d && !g && (g = c("ASTERISK")), d || g) {
+          let m = u ?? "";
+          t.prefixes.indexOf(m) === -1 && (v(m), m = ""), D();
+          let S = h();
+          Z(m, d, g, "", S);
+          continue;
+        }
+        let y = u ?? c("ESCAPED_CHAR");
+        if (y) {
+          v(y);
+          continue;
+        }
+        if (c("OPEN")) {
+          let m = A(), S = c("NAME"), k = c("REGEX");
+          !S && !k && (k = c("ASTERISK"));
+          let E = A();
+          p("CLOSE");
+          let Pe = h();
+          Z(m, S, k, E, Pe);
+          continue;
+        }
+        D(), p("END");
+      }
+      return o;
+    }
+    a(_, "parse");
+    function x(e) {
+      return e.replace(/([.+*?^${}()[\]|/\\])/g, "\\$1");
+    }
+    a(x, "escapeString");
+    function q(e) {
+      return e && e.ignoreCase ? "ui" : "u";
+    }
+    a(q, "flags");
+    function J(e, t, r) {
+      return z(_(e, r), t, r);
+    }
+    a(J, "stringToRegexp");
+    function T(e) {
+      switch (e) {
+        case 0:
+          return "*";
+        case 1:
+          return "?";
+        case 2:
+          return "+";
+        case 3:
+          return "";
+      }
+    }
+    a(T, "modifierToString");
+    function z(e, t, r = {}) {
+      r.delimiter ??= "/#?", r.prefixes ??= "./", r.sensitive ??= false, r.strict ??= false, r.end ??= true, r.start ??= true, r.endsWith = "";
+      let n = r.start ? "^" : "";
+      for (let s of e) {
+        if (s.type === 3) {
+          s.modifier === 3 ? n += x(s.value) : n += `(?:${x(s.value)})${T(s.modifier)}`;
+          continue;
+        }
+        t && t.push(s.name);
+        let i = `[^${x(r.delimiter)}]+?`, c = s.value;
+        if (s.type === 1 ? c = i : s.type === 0 && (c = F), !s.prefix.length && !s.suffix.length) {
+          s.modifier === 3 || s.modifier === 1 ? n += `(${c})${T(s.modifier)}` : n += `((?:${c})${T(s.modifier)})`;
+          continue;
+        }
+        if (s.modifier === 3 || s.modifier === 1) {
+          n += `(?:${x(s.prefix)}(${c})${x(s.suffix)})`, n += T(s.modifier);
+          continue;
+        }
+        n += `(?:${x(s.prefix)}`, n += `((?:${c})(?:`, n += x(s.suffix), n += x(s.prefix), n += `(?:${c}))*)${x(s.suffix)})`, s.modifier === 0 && (n += "?");
+      }
+      let o = `[${x(r.endsWith)}]|$`, l = `[${x(r.delimiter)}]`;
+      if (r.end) return r.strict || (n += `${l}?`), r.endsWith.length ? n += `(?=${o})` : n += "$", new RegExp(n, q(r));
+      r.strict || (n += `(?:${l}(?=${o}))?`);
+      let f = false;
+      if (e.length) {
+        let s = e[e.length - 1];
+        s.type === 3 && s.modifier === 3 && (f = r.delimiter.indexOf(s) > -1);
+      }
+      return f || (n += `(?=${l}|${o})`), new RegExp(n, q(r));
+    }
+    a(z, "partsToRegexp");
+    var b = { delimiter: "", prefixes: "", sensitive: true, strict: true };
+    var Q = { delimiter: ".", prefixes: "", sensitive: true, strict: true };
+    var ee = { delimiter: "/", prefixes: "/", sensitive: true, strict: true };
+    function te(e, t) {
+      return e.length ? e[0] === "/" ? true : !t || e.length < 2 ? false : (e[0] == "\\" || e[0] == "{") && e[1] == "/" : false;
+    }
+    a(te, "isAbsolutePathname");
+    function re(e, t) {
+      return e.startsWith(t) ? e.substring(t.length, e.length) : e;
+    }
+    a(re, "maybeStripPrefix");
+    function Le(e, t) {
+      return e.endsWith(t) ? e.substr(0, e.length - t.length) : e;
+    }
+    a(Le, "maybeStripSuffix");
+    function j(e) {
+      return !e || e.length < 2 ? false : e[0] === "[" || (e[0] === "\\" || e[0] === "{") && e[1] === "[";
+    }
+    a(j, "treatAsIPv6Hostname");
+    var ne = ["ftp", "file", "http", "https", "ws", "wss"];
+    function $(e) {
+      if (!e) return true;
+      for (let t of ne) if (e.test(t)) return true;
+      return false;
+    }
+    a($, "isSpecialScheme");
+    function se(e, t) {
+      if (e = re(e, "#"), t || e === "") return e;
+      let r = new URL("https://example.com");
+      return r.hash = e, r.hash ? r.hash.substring(1, r.hash.length) : "";
+    }
+    a(se, "canonicalizeHash");
+    function ie(e, t) {
+      if (e = re(e, "?"), t || e === "") return e;
+      let r = new URL("https://example.com");
+      return r.search = e, r.search ? r.search.substring(1, r.search.length) : "";
+    }
+    a(ie, "canonicalizeSearch");
+    function ae(e, t) {
+      return t || e === "" ? e : j(e) ? V(e) : G(e);
+    }
+    a(ae, "canonicalizeHostname");
+    function oe(e, t) {
+      if (t || e === "") return e;
+      let r = new URL("https://example.com");
+      return r.password = e, r.password;
+    }
+    a(oe, "canonicalizePassword");
+    function ce(e, t) {
+      if (t || e === "") return e;
+      let r = new URL("https://example.com");
+      return r.username = e, r.username;
+    }
+    a(ce, "canonicalizeUsername");
+    function le(e, t, r) {
+      if (r || e === "") return e;
+      if (t && !ne.includes(t)) return new URL(`${t}:${e}`).pathname;
+      let n = e[0] == "/";
+      return e = new URL(n ? e : "/-" + e, "https://example.com").pathname, n || (e = e.substring(2, e.length)), e;
+    }
+    a(le, "canonicalizePathname");
+    function fe(e, t, r) {
+      return K(t) === e && (e = ""), r || e === "" ? e : Y(e);
+    }
+    a(fe, "canonicalizePort");
+    function he(e, t) {
+      return e = Le(e, ":"), t || e === "" ? e : w(e);
+    }
+    a(he, "canonicalizeProtocol");
+    function K(e) {
+      switch (e) {
+        case "ws":
+        case "http":
+          return "80";
+        case "wws":
+        case "https":
+          return "443";
+        case "ftp":
+          return "21";
+        default:
+          return "";
+      }
+    }
+    a(K, "defaultPortForProtocol");
+    function w(e) {
+      if (e === "") return e;
+      if (/^[-+.A-Za-z0-9]*$/.test(e)) return e.toLowerCase();
+      throw new TypeError(`Invalid protocol '${e}'.`);
+    }
+    a(w, "protocolEncodeCallback");
+    function ue(e) {
+      if (e === "") return e;
+      let t = new URL("https://example.com");
+      return t.username = e, t.username;
+    }
+    a(ue, "usernameEncodeCallback");
+    function de(e) {
+      if (e === "") return e;
+      let t = new URL("https://example.com");
+      return t.password = e, t.password;
+    }
+    a(de, "passwordEncodeCallback");
+    function G(e) {
+      if (e === "") return e;
+      if (/[\t\n\r #%/:<>?@[\]^\\|]/g.test(e)) throw new TypeError(`Invalid hostname '${e}'`);
+      let t = new URL("https://example.com");
+      return t.hostname = e, t.hostname;
+    }
+    a(G, "hostnameEncodeCallback");
+    function V(e) {
+      if (e === "") return e;
+      if (/[^0-9a-fA-F[\]:]/g.test(e)) throw new TypeError(`Invalid IPv6 hostname '${e}'`);
+      return e.toLowerCase();
+    }
+    a(V, "ipv6HostnameEncodeCallback");
+    function Y(e) {
+      if (e === "" || /^[0-9]*$/.test(e) && parseInt(e) <= 65535) return e;
+      throw new TypeError(`Invalid port '${e}'.`);
+    }
+    a(Y, "portEncodeCallback");
+    function pe(e) {
+      if (e === "") return e;
+      let t = new URL("https://example.com");
+      return t.pathname = e[0] !== "/" ? "/-" + e : e, e[0] !== "/" ? t.pathname.substring(2, t.pathname.length) : t.pathname;
+    }
+    a(pe, "standardURLPathnameEncodeCallback");
+    function ge(e) {
+      return e === "" ? e : new URL(`data:${e}`).pathname;
+    }
+    a(ge, "pathURLPathnameEncodeCallback");
+    function me(e) {
+      if (e === "") return e;
+      let t = new URL("https://example.com");
+      return t.search = e, t.search.substring(1, t.search.length);
+    }
+    a(me, "searchEncodeCallback");
+    function Se(e) {
+      if (e === "") return e;
+      let t = new URL("https://example.com");
+      return t.hash = e, t.hash.substring(1, t.hash.length);
+    }
+    a(Se, "hashEncodeCallback");
+    var C = class {
+      #i;
+      #n = [];
+      #t = {};
+      #e = 0;
+      #s = 1;
+      #l = 0;
+      #o = 0;
+      #d = 0;
+      #p = 0;
+      #g = false;
+      constructor(t) {
+        this.#i = t;
+      }
+      get result() {
+        return this.#t;
+      }
+      parse() {
+        for (this.#n = W(this.#i, true); this.#e < this.#n.length; this.#e += this.#s) {
+          if (this.#s = 1, this.#n[this.#e].type === "END") {
+            if (this.#o === 0) {
+              this.#b(), this.#f() ? this.#r(9, 1) : this.#h() ? this.#r(8, 1) : this.#r(7, 0);
+              continue;
+            } else if (this.#o === 2) {
+              this.#u(5);
+              continue;
+            }
+            this.#r(10, 0);
+            break;
+          }
+          if (this.#d > 0) if (this.#A()) this.#d -= 1;
+          else continue;
+          if (this.#T()) {
+            this.#d += 1;
+            continue;
+          }
+          switch (this.#o) {
+            case 0:
+              this.#P() && this.#u(1);
+              break;
+            case 1:
+              if (this.#P()) {
+                this.#C();
+                let t = 7, r = 1;
+                this.#E() ? (t = 2, r = 3) : this.#g && (t = 2), this.#r(t, r);
+              }
+              break;
+            case 2:
+              this.#S() ? this.#u(3) : (this.#x() || this.#h() || this.#f()) && this.#u(5);
+              break;
+            case 3:
+              this.#O() ? this.#r(4, 1) : this.#S() && this.#r(5, 1);
+              break;
+            case 4:
+              this.#S() && this.#r(5, 1);
+              break;
+            case 5:
+              this.#y() ? this.#p += 1 : this.#w() && (this.#p -= 1), this.#k() && !this.#p ? this.#r(6, 1) : this.#x() ? this.#r(7, 0) : this.#h() ? this.#r(8, 1) : this.#f() && this.#r(9, 1);
+              break;
+            case 6:
+              this.#x() ? this.#r(7, 0) : this.#h() ? this.#r(8, 1) : this.#f() && this.#r(9, 1);
+              break;
+            case 7:
+              this.#h() ? this.#r(8, 1) : this.#f() && this.#r(9, 1);
+              break;
+            case 8:
+              this.#f() && this.#r(9, 1);
+              break;
+            case 9:
+              break;
+            case 10:
+              break;
+          }
+        }
+        this.#t.hostname !== void 0 && this.#t.port === void 0 && (this.#t.port = "");
+      }
+      #r(t, r) {
+        switch (this.#o) {
+          case 0:
+            break;
+          case 1:
+            this.#t.protocol = this.#c();
+            break;
+          case 2:
+            break;
+          case 3:
+            this.#t.username = this.#c();
+            break;
+          case 4:
+            this.#t.password = this.#c();
+            break;
+          case 5:
+            this.#t.hostname = this.#c();
+            break;
+          case 6:
+            this.#t.port = this.#c();
+            break;
+          case 7:
+            this.#t.pathname = this.#c();
+            break;
+          case 8:
+            this.#t.search = this.#c();
+            break;
+          case 9:
+            this.#t.hash = this.#c();
+            break;
+          case 10:
+            break;
+        }
+        this.#o !== 0 && t !== 10 && ([1, 2, 3, 4].includes(this.#o) && [6, 7, 8, 9].includes(t) && (this.#t.hostname ??= ""), [1, 2, 3, 4, 5, 6].includes(this.#o) && [8, 9].includes(t) && (this.#t.pathname ??= this.#g ? "/" : ""), [1, 2, 3, 4, 5, 6, 7].includes(this.#o) && t === 9 && (this.#t.search ??= "")), this.#R(t, r);
+      }
+      #R(t, r) {
+        this.#o = t, this.#l = this.#e + r, this.#e += r, this.#s = 0;
+      }
+      #b() {
+        this.#e = this.#l, this.#s = 0;
+      }
+      #u(t) {
+        this.#b(), this.#o = t;
+      }
+      #m(t) {
+        return t < 0 && (t = this.#n.length - t), t < this.#n.length ? this.#n[t] : this.#n[this.#n.length - 1];
+      }
+      #a(t, r) {
+        let n = this.#m(t);
+        return n.value === r && (n.type === "CHAR" || n.type === "ESCAPED_CHAR" || n.type === "INVALID_CHAR");
+      }
+      #P() {
+        return this.#a(this.#e, ":");
+      }
+      #E() {
+        return this.#a(this.#e + 1, "/") && this.#a(this.#e + 2, "/");
+      }
+      #S() {
+        return this.#a(this.#e, "@");
+      }
+      #O() {
+        return this.#a(this.#e, ":");
+      }
+      #k() {
+        return this.#a(this.#e, ":");
+      }
+      #x() {
+        return this.#a(this.#e, "/");
+      }
+      #h() {
+        if (this.#a(this.#e, "?")) return true;
+        if (this.#n[this.#e].value !== "?") return false;
+        let t = this.#m(this.#e - 1);
+        return t.type !== "NAME" && t.type !== "REGEX" && t.type !== "CLOSE" && t.type !== "ASTERISK";
+      }
+      #f() {
+        return this.#a(this.#e, "#");
+      }
+      #T() {
+        return this.#n[this.#e].type == "OPEN";
+      }
+      #A() {
+        return this.#n[this.#e].type == "CLOSE";
+      }
+      #y() {
+        return this.#a(this.#e, "[");
+      }
+      #w() {
+        return this.#a(this.#e, "]");
+      }
+      #c() {
+        let t = this.#n[this.#e], r = this.#m(this.#l).index;
+        return this.#i.substring(r, t.index);
+      }
+      #C() {
+        let t = {};
+        Object.assign(t, b), t.encodePart = w;
+        let r = J(this.#c(), void 0, t);
+        this.#g = $(r);
+      }
+    };
+    a(C, "Parser");
+    var X = ["protocol", "username", "password", "hostname", "port", "pathname", "search", "hash"];
+    var O = "*";
+    function xe(e, t) {
+      if (typeof e != "string") throw new TypeError("parameter 1 is not of type 'string'.");
+      let r = new URL(e, t);
+      return { protocol: r.protocol.substring(0, r.protocol.length - 1), username: r.username, password: r.password, hostname: r.hostname, port: r.port, pathname: r.pathname, search: r.search !== "" ? r.search.substring(1, r.search.length) : void 0, hash: r.hash !== "" ? r.hash.substring(1, r.hash.length) : void 0 };
+    }
+    a(xe, "extractValues");
+    function R(e, t) {
+      return t ? I(e) : e;
+    }
+    a(R, "processBaseURLString");
+    function L(e, t, r) {
+      let n;
+      if (typeof t.baseURL == "string") try {
+        n = new URL(t.baseURL), t.protocol === void 0 && (e.protocol = R(n.protocol.substring(0, n.protocol.length - 1), r)), !r && t.protocol === void 0 && t.hostname === void 0 && t.port === void 0 && t.username === void 0 && (e.username = R(n.username, r)), !r && t.protocol === void 0 && t.hostname === void 0 && t.port === void 0 && t.username === void 0 && t.password === void 0 && (e.password = R(n.password, r)), t.protocol === void 0 && t.hostname === void 0 && (e.hostname = R(n.hostname, r)), t.protocol === void 0 && t.hostname === void 0 && t.port === void 0 && (e.port = R(n.port, r)), t.protocol === void 0 && t.hostname === void 0 && t.port === void 0 && t.pathname === void 0 && (e.pathname = R(n.pathname, r)), t.protocol === void 0 && t.hostname === void 0 && t.port === void 0 && t.pathname === void 0 && t.search === void 0 && (e.search = R(n.search.substring(1, n.search.length), r)), t.protocol === void 0 && t.hostname === void 0 && t.port === void 0 && t.pathname === void 0 && t.search === void 0 && t.hash === void 0 && (e.hash = R(n.hash.substring(1, n.hash.length), r));
+      } catch {
+        throw new TypeError(`invalid baseURL '${t.baseURL}'.`);
+      }
+      if (typeof t.protocol == "string" && (e.protocol = he(t.protocol, r)), typeof t.username == "string" && (e.username = ce(t.username, r)), typeof t.password == "string" && (e.password = oe(t.password, r)), typeof t.hostname == "string" && (e.hostname = ae(t.hostname, r)), typeof t.port == "string" && (e.port = fe(t.port, e.protocol, r)), typeof t.pathname == "string") {
+        if (e.pathname = t.pathname, n && !te(e.pathname, r)) {
+          let o = n.pathname.lastIndexOf("/");
+          o >= 0 && (e.pathname = R(n.pathname.substring(0, o + 1), r) + e.pathname);
+        }
+        e.pathname = le(e.pathname, e.protocol, r);
+      }
+      return typeof t.search == "string" && (e.search = ie(t.search, r)), typeof t.hash == "string" && (e.hash = se(t.hash, r)), e;
+    }
+    a(L, "applyInit");
+    function I(e) {
+      return e.replace(/([+*?:{}()\\])/g, "\\$1");
+    }
+    a(I, "escapePatternString");
+    function Ie(e) {
+      return e.replace(/([.+*?^${}()[\]|/\\])/g, "\\$1");
+    }
+    a(Ie, "escapeRegexpString");
+    function Ne(e, t) {
+      t.delimiter ??= "/#?", t.prefixes ??= "./", t.sensitive ??= false, t.strict ??= false, t.end ??= true, t.start ??= true, t.endsWith = "";
+      let r = ".*", n = `[^${Ie(t.delimiter)}]+?`, o = /[$_\u200C\u200D\p{ID_Continue}]/u, l = "";
+      for (let f = 0; f < e.length; ++f) {
+        let s = e[f];
+        if (s.type === 3) {
+          if (s.modifier === 3) {
+            l += I(s.value);
+            continue;
+          }
+          l += `{${I(s.value)}}${T(s.modifier)}`;
+          continue;
+        }
+        let i = s.hasCustomName(), c = !!s.suffix.length || !!s.prefix.length && (s.prefix.length !== 1 || !t.prefixes.includes(s.prefix)), h = f > 0 ? e[f - 1] : null, p = f < e.length - 1 ? e[f + 1] : null;
+        if (!c && i && s.type === 1 && s.modifier === 3 && p && !p.prefix.length && !p.suffix.length) if (p.type === 3) {
+          let A = p.value.length > 0 ? p.value[0] : "";
+          c = o.test(A);
+        } else c = !p.hasCustomName();
+        if (!c && !s.prefix.length && h && h.type === 3) {
+          let A = h.value[h.value.length - 1];
+          c = t.prefixes.includes(A);
+        }
+        c && (l += "{"), l += I(s.prefix), i && (l += `:${s.name}`), s.type === 2 ? l += `(${s.value})` : s.type === 1 ? i || (l += `(${n})`) : s.type === 0 && (!i && (!h || h.type === 3 || h.modifier !== 3 || c || s.prefix !== "") ? l += "*" : l += `(${r})`), s.type === 1 && i && s.suffix.length && o.test(s.suffix[0]) && (l += "\\"), l += I(s.suffix), c && (l += "}"), s.modifier !== 3 && (l += T(s.modifier));
+      }
+      return l;
+    }
+    a(Ne, "partsToPattern");
+    var M = class {
+      #i;
+      #n = {};
+      #t = {};
+      #e = {};
+      #s = {};
+      #l = false;
+      constructor(t = {}, r, n) {
+        try {
+          let o;
+          if (typeof r == "string" ? o = r : n = r, typeof t == "string") {
+            let i = new C(t);
+            if (i.parse(), t = i.result, o === void 0 && typeof t.protocol != "string") throw new TypeError("A base URL must be provided for a relative constructor string.");
+            t.baseURL = o;
+          } else {
+            if (!t || typeof t != "object") throw new TypeError("parameter 1 is not of type 'string' and cannot convert to dictionary.");
+            if (o) throw new TypeError("parameter 1 is not of type 'string'.");
+          }
+          typeof n > "u" && (n = { ignoreCase: false });
+          let l = { ignoreCase: n.ignoreCase === true }, f = { pathname: O, protocol: O, username: O, password: O, hostname: O, port: O, search: O, hash: O };
+          this.#i = L(f, t, true), K(this.#i.protocol) === this.#i.port && (this.#i.port = "");
+          let s;
+          for (s of X) {
+            if (!(s in this.#i)) continue;
+            let i = {}, c = this.#i[s];
+            switch (this.#t[s] = [], s) {
+              case "protocol":
+                Object.assign(i, b), i.encodePart = w;
+                break;
+              case "username":
+                Object.assign(i, b), i.encodePart = ue;
+                break;
+              case "password":
+                Object.assign(i, b), i.encodePart = de;
+                break;
+              case "hostname":
+                Object.assign(i, Q), j(c) ? i.encodePart = V : i.encodePart = G;
+                break;
+              case "port":
+                Object.assign(i, b), i.encodePart = Y;
+                break;
+              case "pathname":
+                $(this.#n.protocol) ? (Object.assign(i, ee, l), i.encodePart = pe) : (Object.assign(i, b, l), i.encodePart = ge);
+                break;
+              case "search":
+                Object.assign(i, b, l), i.encodePart = me;
+                break;
+              case "hash":
+                Object.assign(i, b, l), i.encodePart = Se;
+                break;
+            }
+            try {
+              this.#s[s] = _(c, i), this.#n[s] = z(this.#s[s], this.#t[s], i), this.#e[s] = Ne(this.#s[s], i), this.#l = this.#l || this.#s[s].some((h) => h.type === 2);
+            } catch {
+              throw new TypeError(`invalid ${s} pattern '${this.#i[s]}'.`);
+            }
+          }
+        } catch (o) {
+          throw new TypeError(`Failed to construct 'URLPattern': ${o.message}`);
+        }
+      }
+      get [Symbol.toStringTag]() {
+        return "URLPattern";
+      }
+      test(t = {}, r) {
+        let n = { pathname: "", protocol: "", username: "", password: "", hostname: "", port: "", search: "", hash: "" };
+        if (typeof t != "string" && r) throw new TypeError("parameter 1 is not of type 'string'.");
+        if (typeof t > "u") return false;
+        try {
+          typeof t == "object" ? n = L(n, t, false) : n = L(n, xe(t, r), false);
+        } catch {
+          return false;
+        }
+        let o;
+        for (o of X) if (!this.#n[o].exec(n[o])) return false;
+        return true;
+      }
+      exec(t = {}, r) {
+        let n = { pathname: "", protocol: "", username: "", password: "", hostname: "", port: "", search: "", hash: "" };
+        if (typeof t != "string" && r) throw new TypeError("parameter 1 is not of type 'string'.");
+        if (typeof t > "u") return;
+        try {
+          typeof t == "object" ? n = L(n, t, false) : n = L(n, xe(t, r), false);
+        } catch {
+          return null;
+        }
+        let o = {};
+        r ? o.inputs = [t, r] : o.inputs = [t];
+        let l;
+        for (l of X) {
+          let f = this.#n[l].exec(n[l]);
+          if (!f) return null;
+          let s = {};
+          for (let [i, c] of this.#t[l].entries()) if (typeof c == "string" || typeof c == "number") {
+            let h = f[i + 1];
+            s[c] = h;
+          }
+          o[l] = { input: n[l] ?? "", groups: s };
+        }
+        return o;
+      }
+      static compareComponent(t, r, n) {
+        let o = a((i, c) => {
+          for (let h of ["type", "modifier", "prefix", "value", "suffix"]) {
+            if (i[h] < c[h]) return -1;
+            if (i[h] === c[h]) continue;
+            return 1;
+          }
+          return 0;
+        }, "comparePart"), l = new P(3, "", "", "", "", 3), f = new P(0, "", "", "", "", 3), s = a((i, c) => {
+          let h = 0;
+          for (; h < Math.min(i.length, c.length); ++h) {
+            let p = o(i[h], c[h]);
+            if (p) return p;
+          }
+          return i.length === c.length ? 0 : o(i[h] ?? l, c[h] ?? l);
+        }, "comparePartList");
+        return !r.#e[t] && !n.#e[t] ? 0 : r.#e[t] && !n.#e[t] ? s(r.#s[t], [f]) : !r.#e[t] && n.#e[t] ? s([f], n.#s[t]) : s(r.#s[t], n.#s[t]);
+      }
+      get protocol() {
+        return this.#e.protocol;
+      }
+      get username() {
+        return this.#e.username;
+      }
+      get password() {
+        return this.#e.password;
+      }
+      get hostname() {
+        return this.#e.hostname;
+      }
+      get port() {
+        return this.#e.port;
+      }
+      get pathname() {
+        return this.#e.pathname;
+      }
+      get search() {
+        return this.#e.search;
+      }
+      get hash() {
+        return this.#e.hash;
+      }
+      get hasRegExpGroups() {
+        return this.#l;
+      }
+    };
+    a(M, "URLPattern");
+  }
+});
+
+// node_modules/urlpattern-polyfill/index.cjs
+var require_urlpattern_polyfill = __commonJS({
+  "node_modules/urlpattern-polyfill/index.cjs"(exports2, module2) {
+    var { URLPattern } = require_urlpattern();
+    module2.exports = { URLPattern };
+    if (!globalThis.URLPattern) {
+      globalThis.URLPattern = URLPattern;
+    }
+  }
+});
+
+// lib/cjs/third_party/urlpattern-polyfill/urlpattern-polyfill.js
+var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
+  if (k2 === void 0) k2 = k;
+  var desc = Object.getOwnPropertyDescriptor(m, k);
+  if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+    desc = { enumerable: true, get: function() {
+      return m[k];
+    } };
+  }
+  Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+  if (k2 === void 0) k2 = k;
+  o[k2] = m[k];
+}));
+var __exportStar = exports && exports.__exportStar || function(m, exports2) {
+  for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m, p);
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+__exportStar(require_urlpattern_polyfill(), exports);
 
 
 /***/ }),

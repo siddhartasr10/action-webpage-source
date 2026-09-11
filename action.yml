@@ -1,29 +1,32 @@
-name: 'Web Page Snapshot Action'
-description: 'An action which can snapshot a web page.'
-author: 'SimpERROR_'
+name: 'Simple web page source code downloader'
+description: 'An action which downloads a page\'s source code.'
+metadata:
+  author: 'siddhartasr10'
+  waitFunc: 'SimpERROR_'
+
 branding: 
-  icon: camera
-  color: blue
+  icon: download-cloud
+  color: purple
 
 inputs:
   website:
-    description: 'The website to snapshot.'
+    description: 'The website to download.'
     required: true
     default: 'https://www.bilibili.com/video/BV1GJ411x7h7'
 
 outputs:
-  snapshot-path:
-    description: 'The path to the saved snapshot image.'
-    value: ${{ steps.run-step.outputs.snapshot-path }}
+  html-path:
+    description: 'The path to the saved html file.'
+    value: ${{ steps.run-step.outputs.html-path }}
   status:
-    description: 'The status of the snapshot operation (success/failed).'
+    description: 'The status of the download operation (success/failed).'
     value: ${{ steps.run-step.outputs.status }}
-  image-size:
-    description: 'The size of the snapshot image (width x height).'
-    value: ${{ steps.run-step.outputs.image-size }}
   time:
-    description: 'The time when the snapshot was taken.'
+    description: 'The time when the download was made.'
     value: ${{ steps.run-step.outputs.time }}
+  # image-size:
+  #   description: 'The size of the snapshot image (width x height).'
+  #   value: ${{ steps.run-step.outputs.image-size }}
 
 runs:
   using: 'node20'

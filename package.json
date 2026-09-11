@@ -1,26 +1,25 @@
 {
-  "name": "web-page-snapshot-action",
+  "name": "web-page-snapshot-html-action",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
     "package": "ncc build lib/main.js -o dist",
-    "test": "jest",
     "all": "npm run build && npm test"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SimpERROR/web-page-snapshot-action.git"
+    "url": "git+https://github.com/siddhartasr10/web-page-snapshot-html-action.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/SimpERROR/web-page-snapshot-action/issues"
+    "url": "https://github.com/siddhartasr10/web-page-snapshot-html-action/issues"
   },
-  "homepage": "https://github.com/SimpERROR/web-page-snapshot-action#readme",
+  "homepage": "https://github.com/siddhartasr10/web-page-snapshot-html-action#readme",
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/github": "^9.0.0",
