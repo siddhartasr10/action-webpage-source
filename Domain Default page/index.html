@@ -20,8 +20,9 @@
   <script>
     const USER = 'TU_USUARIO';
     const REPO = 'TU_REPOSITORIO';
+    const PATH = String(document.baseURI.split("/").slice(4));
 
-    fetch(`https://api.github.com/repos/siddhartasr10/web-page-snapshot-html-action/contents?ref=gh-pages`)
+    fetch(`https://api.github.com/repos/siddhartasr10/web-page-snapshot-html-action/contents/${PATH}?ref=gh-pages`)
       .then(res => res.json())
       .then(data => {
         const list = document.getElementById('files');
