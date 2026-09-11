@@ -1,5 +1,5 @@
 name: 'Simple web page source code downloader'
-description: 'An action which downloads a page\'s source code.'
+description: 'An action which downloads the page source code.'
 metadata:
   author: 'siddhartasr10'
   waitFunc: 'SimpERROR_'
