@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
-    "package": "ncc build lib/main.js -o dist",
-    "all": "npm run build && npm test"
+    "build": "tsc && cp src/websites.txt dist/",
+    "package": "ncc build lib/main.js -o dist && cp src/websites.txt dist/",
+    "all": "npm run build && npm run package"
   },
   "repository": {
     "type": "git",

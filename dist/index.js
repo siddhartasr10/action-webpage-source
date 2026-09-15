@@ -68436,7 +68436,9 @@ async function waitForPageStable(page, timeout = 30000) {
 }
 async function run() {
     try {
-        const website = core.getInput('website', { required: true });
+        const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
+            .trimEnd()
+            .split("\n");
         const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         core.info(`Launching browser with executable path: ${executablePath}`);
         const browser = await puppeteer.launch({
@@ -68452,49 +68454,53 @@ async function run() {
             ]
         });
         const page = await browser.newPage();
-        let css = "";
+        let css = "", finishedHtmlPaths = [];
         page.on('response', async (response) => {
             if (response.request().resourceType() !== 'stylesheet')
                 return;
             css += await response.text();
         });
-        await page.goto(website, { waitUntil: 'domcontentloaded' });
-        core.info('Waiting for page to stabilize...');
-        await waitForPageStable(page);
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const pageTitle = await page.title();
-        // const snapshotDir = path.join(process.cwd(), 'snapshots');
         const Rootdir = path.join(process.cwd(), 'sites');
-        if (!fs.existsSync(Rootdir)) {
+        if (!fs.existsSync(Rootdir))
             fs.mkdirSync(Rootdir, { recursive: true });
+        for (let i = 0; i < websites.length; i++) {
+            css = "";
+            await page.goto(websites[i], { waitUntil: 'domcontentloaded' });
+            core.info(`Waiting for page: ${websites[i]} to stabilize...`);
+            await waitForPageStable(page);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const pageTitle = await page.title();
+            // const snapshotDir = path.join(process.cwd(), 'snapshots');
+            const sourceDir = path.join(Rootdir, pageTitle);
+            if (!fs.existsSync(sourceDir))
+                fs.mkdirSync(sourceDir, { recursive: true });
+            // const filename = `snapshot-${timestamp}.png`;
+            const htmlFilename = `${pageTitle}-${timestamp}.html`;
+            const htmlPath = path.join(sourceDir, htmlFilename); // this was snapshotPath 
+            const html = await page.content();
+            const cssFilename = 'style.css';
+            const cssPath = path.join(sourceDir, cssFilename);
+            // await page.screenshot({ path: snapshotPath, fullPage: true });
+            fs.writeFileSync(htmlPath, html);
+            fs.writeFileSync(cssPath, css);
+            // const viewport = page.viewport();
+            // const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
+            finishedHtmlPaths.push(htmlPath);
+            core.info("Pushed source: " + pageTitle);
         }
-        const sourceDir = path.join(Rootdir, pageTitle);
-        if (!fs.existsSync(sourceDir)) {
-            fs.mkdirSync(sourceDir, { recursive: true });
-        }
-        // const filename = `snapshot-${timestamp}.png`;
-        const htmlFilename = `${pageTitle}-${timestamp}.html`;
-        const htmlPath = path.join(sourceDir, htmlFilename); // this was snapshotPath 
-        const html = await page.content();
-        const cssFilename = 'style.css';
-        const cssPath = path.join(sourceDir, cssFilename);
-        // await page.screenshot({ path: snapshotPath, fullPage: true });
-        fs.writeFileSync(htmlPath, html);
-        fs.writeFileSync(cssPath, css);
-        // const viewport = page.viewport();
-        // const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
         await browser.close();
         const time = new Date().toISOString();
-        core.setOutput('html-path', html);
+        core.setOutput('html-path', finishedHtmlPaths);
         core.setOutput('time', time);
         core.setOutput('status', 'success');
         // core.setOutput('image-size', imageSize);
         // core.info(`Image size: ${imageSize}`);
-        core.info(`Snapshot saved to: ${htmlPath}`);
+        core.info(`Snapshot saved to: ${finishedHtmlPaths}`);
         core.info(`Status: success`);
     }
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
         core.setFailed(`Error: ${errorMessage}`);
         core.setOutput('status', 'failed');
         core.setOutput('time', new Date().toISOString());
