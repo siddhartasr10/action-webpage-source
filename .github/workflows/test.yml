@@ -1,6 +1,5 @@
   name: test
 
-
   on:
     workflow_dispatch:
     schedule:
@@ -23,7 +22,7 @@
           with:
             chrome-version: stable
 
-        - run: npm ci && npm run build
+        - run: npm ci && npm run all
 
         - name: get source-code
           id: snapshot_step
