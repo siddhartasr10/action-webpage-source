@@ -15,7 +15,7 @@ inputs:
     default: 'https://www.bilibili.com/video/BV1GJ411x7h7'
 
 outputs:
-  html-path:
+  source-paths:
     description: 'The path to the saved html file.'
     value: ${{ steps.run-step.outputs.html-path }}
   status:
@@ -26,5 +26,5 @@ outputs:
     value: ${{ steps.run-step.outputs.time }}
 
 runs:
-  using: 'node20'
+  using: 'node26'
   main: 'dist/index.js'

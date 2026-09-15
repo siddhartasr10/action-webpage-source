@@ -1,47 +1,43 @@
 name: main
 
 on:
-  push: 
-    branches: ["main"]
-  pull_request: 
-    branches: ["main"]
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
+  # push: 
+  #   branches: ["main"]
+  # pull_request: 
+  #   branches: ["main"]
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
+  permissions: 
+    contents: write
 
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        
-      - name: 设置 Chromium
-        uses: browser-actions/setup-chrome@v1
-        id: setup-chrome
-        with:
-          chrome-version: stable
+  jobs:
+    test:
+      runs-on: ubuntu-latest
 
-      - run: npm ci && npm run build
-      
-      - name: 生成网页快照
-        id: snapshot_step
-        uses: ./
-        with:
-          website: 'https://mai.chongxi.us/?share=true'
-        env:
-          PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
-          
-      - name: 重命名截图为固定文件名
-        run: |
-          LATEST_FILE=$(ls -t snapshots/*.png | head -n 1)
-          cp "$LATEST_FILE" snapshots/latest.png
+      steps:
+        - name: checkout
+          uses: actions/checkout@v4
 
-      - name: 部署到 GitHub Pages (覆盖旧图)
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./snapshots
-          publish_branch: gh-pages
-          keep_files: true
+        - name: Setup Chromium
+          uses: browser-actions/setup-chrome@v1
+          id: setup-chrome
+          with:
+            chrome-version: stable
+
+        - run: npm ci && npm run all
+
+        - name: get source-code
+          id: snapshot_step
+          uses: ./
+          env:
+            PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+
+        - name: GitHub Pages
+          uses: peaceiris/actions-gh-pages@v4
+          with:
+            github_token: ${{ secrets.GITHUB_TOKEN }}
+            publish_dir: ./sites
+            publish_branch: gh-pages
+            keep_files: true

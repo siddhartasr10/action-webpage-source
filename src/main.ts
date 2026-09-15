@@ -58,7 +58,7 @@ async function run() {
       ]
     });
     const page = await browser.newPage();
-    let css = "", finishedHtmlPaths = [];
+    let css = "", finishedSrcPaths = [];
 
     page.on('response', async (response) => {
       if (response.request().resourceType() !== 'stylesheet') return;
@@ -95,7 +95,7 @@ async function run() {
       fs.writeFileSync(cssPath, css);
       // const viewport = page.viewport();
       // const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
-      finishedHtmlPaths.push(htmlPath);
+      finishedSrcPaths.push(sourceDir);
       core.info("Pushed source: " + pageTitle);
     }
     
@@ -103,14 +103,14 @@ async function run() {
     
     const time = new Date().toISOString();
     
-    core.setOutput('html-path', finishedHtmlPaths);
+    core.setOutput('source-paths', finishedSrcPaths);
     core.setOutput('time', time);
     core.setOutput('status', 'success');
 
     // core.setOutput('image-size', imageSize);
     // core.info(`Image size: ${imageSize}`);
 
-    core.info(`Snapshot saved to: ${finishedHtmlPaths}`);
+    core.info(`Snapshot saved to: ${finishedSrcPaths}`);
     core.info(`Status: success`);
     
   } catch (error) {
