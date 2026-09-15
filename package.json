@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc && cp src/websites.txt dist/",
-    "package": "ncc build lib/main.js -o dist && cp src/websites.txt dist/",
+    "package": "ncc build lib/main.js -o dist && cp src/websites.txt dist/ && cp src/index.html dist/",
     "all": "npm run build && npm run package"
   },
   "repository": {
