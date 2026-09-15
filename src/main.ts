@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as puppeteer from 'puppeteer-core';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as jsdom from 'jsdom';
 
 async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000): Promise<void> {
   const startTime = Date.now();
