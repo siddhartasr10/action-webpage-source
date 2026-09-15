@@ -24,9 +24,6 @@ outputs:
   time:
     description: 'The time when the download was made.'
     value: ${{ steps.run-step.outputs.time }}
-  # image-size:
-  #   description: 'The size of the snapshot image (width x height).'
-  #   value: ${{ steps.run-step.outputs.image-size }}
 
 runs:
   using: 'node20'

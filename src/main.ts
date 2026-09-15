@@ -38,8 +38,9 @@ async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000):
 
 async function run() {
   try {
-    core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
-    const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString().split("\n");
+    const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
+      .trimEnd()
+      .split("\n");
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
     core.info(`Launching browser with executable path: ${executablePath}`);
@@ -96,6 +97,7 @@ async function run() {
       // const viewport = page.viewport();
       // const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
       finishedHtmlPaths.push(htmlPath);
+      core.info("Pushed source: " + pageTitle);
     }
     
     await browser.close();
@@ -114,6 +116,7 @@ async function run() {
     
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
     core.setFailed(`Error: ${errorMessage}`);
     
     core.setOutput('status', 'failed');
