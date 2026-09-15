@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/websites.txt dist/",
     "package": "ncc build lib/main.js -o dist && cp src/websites.txt dist/",
     "all": "npm run build && npm test"
   },

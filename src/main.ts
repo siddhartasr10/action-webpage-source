@@ -38,6 +38,7 @@ async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000):
 
 async function run() {
   try {
+    core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
     const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString().split("\n");
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
