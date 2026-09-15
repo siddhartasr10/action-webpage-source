@@ -87,20 +87,30 @@ async function run() {
       // const filename = `snapshot-${timestamp}.png`;
       const htmlFilename = `${pageTitle}-${timestamp}.html`;
       const htmlPath = path.join(sourceDir, htmlFilename); // this was snapshotPath 
-      const html = await page.content();
+      let html = await page.content();
+      
+      // We search for the head tag and kinda do a split but with slice, as split removes the splitted element.
+      // We add manually a stylesheet that links to our recovered CSS.
+      const headStartIdx = html.match("<head>")?.index;
+      let htmlSecondHalf = "";
+      if (!headStartIdx) {
+        core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
+        core.info(`Manually change or add a link with an href to style.css`);
+      }
+      else {
+        htmlSecondHalf = html.slice(headStartIdx + "<head>".length);
+        html = html.slice(0, headStartIdx + "<head>".length);
+
+        html += ' <link rel="stylesheet" href="style.css">';
+        html = html + htmlSecondHalf;
+        core.info(`CSS of ${hostname} linked successfully`);
+      }
 
       const cssFilename = 'style.css';
       const cssPath = path.join(sourceDir, cssFilename);
-      // await page.screenshot({ path: snapshotPath, fullPage: true });
+
       fs.writeFileSync(htmlPath, html);
       fs.writeFileSync(cssPath, css);
-
-      // We copy for each source code the index.html so it can be correctly seen in the github page.
-      const idxSrcPath = path.join(__dirname, "index.html");
-      const idxDestPath = path.join(sourceDir, "index.html");
-      fs.copyFileSync(idxSrcPath, idxDestPath);
-      // const viewport = page.viewport();
-      // const imageSize = `${viewport?.width || 1920}x${viewport?.height || 1080}`;
       finishedSrcPaths.push(sourceDir);
       core.info("Pushed source: " + pageTitle);
     }
