@@ -8,11 +8,11 @@ branding:
   icon: download-cloud
   color: purple
 
-# inputs:
-#   website:
-#     description: 'The website to download.'
-#     required: true
-#     default: 'https://www.bilibili.com/video/BV1GJ411x7h7'
+inputs:
+  website:
+    description: 'The website to download.'
+    required: true
+    default: 'https://www.bilibili.com/video/BV1GJ411x7h7'
 
 outputs:
   html-path:
