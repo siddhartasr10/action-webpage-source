@@ -79,8 +79,9 @@ async function run() {
       const pageTitle = await page.title();
 
       // const snapshotDir = path.join(process.cwd(), 'snapshots');
+      const hostname = new URL(websites[i]).hostname;
 
-      const sourceDir = path.join(Rootdir, pageTitle);
+      const sourceDir = path.join(Rootdir, hostname);
       if (!fs.existsSync(sourceDir)) fs.mkdirSync(sourceDir, { recursive: true });
 
       // const filename = `snapshot-${timestamp}.png`;
