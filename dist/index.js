@@ -262501,18 +262501,20 @@ async function run() {
             let html = await page.content();
             // We search for the head tag and kinda do a split but with slice, as split removes the splitted element.
             // We add manually a stylesheet that links to our recovered CSS.
-            const headStartIdx = html.match("<head>")?.index;
+            const headStartIdx = (core.getBooleanInput("save-css")) ? html.match("<head>")?.index : null;
             let htmlSecondHalf = "";
-            if (!headStartIdx) {
-                core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
-                core.info(`Manually change or add a link with an href to style.css`);
-            }
-            else {
-                htmlSecondHalf = html.slice(headStartIdx + "<head>".length);
-                html = html.slice(0, headStartIdx + "<head>".length);
-                html += ' <link rel="stylesheet" href="style.css">';
-                html = html + htmlSecondHalf;
-                core.info(`CSS of ${hostname} linked successfully`);
+            if (core.getBooleanInput("save-css")) {
+                if (!headStartIdx) {
+                    core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
+                    core.info(`Manually change or add a link with an href to style.css`);
+                }
+                else {
+                    htmlSecondHalf = html.slice(headStartIdx + "<head>".length);
+                    html = html.slice(0, headStartIdx + "<head>".length);
+                    html += ' <link rel="stylesheet" href="style.css">';
+                    html = html + htmlSecondHalf;
+                    core.info(`CSS of ${hostname} linked successfully`);
+                }
             }
             fs.writeFileSync(htmlPath, html);
             const cssFilename = 'style.css';
