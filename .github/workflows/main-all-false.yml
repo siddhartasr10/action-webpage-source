@@ -1,4 +1,4 @@
-  name: test
+  name: main-false
 
   on:
     workflow_dispatch:

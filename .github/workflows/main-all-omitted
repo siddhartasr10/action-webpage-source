@@ -1,4 +1,4 @@
-  name: main
+  name: main-omitted
 
   on:
     workflow_dispatch:
@@ -27,9 +27,6 @@
         - name: get source-code
           id: snapshot_step
           uses: ./
-          with:
-            include-index: true
-            save-css: true
           env:
             PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
 
