@@ -111,6 +111,12 @@ async function run() {
 
       fs.writeFileSync(htmlPath, html);
       fs.writeFileSync(cssPath, css);
+
+      // We copy for each source code the index.html so it can be correctly seen in the github page.
+      const idxSrcPath = path.join(__dirname, "index.html");
+      const idxDestPath = path.join(sourceDir, "index.html");
+      fs.copyFileSync(idxSrcPath, idxDestPath);
+
       finishedSrcPaths.push(sourceDir);
       core.info("Pushed source: " + pageTitle);
     }
