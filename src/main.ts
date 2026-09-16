@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import * as puppeteer from 'puppeteer-core';
+import * as puppeteer from 'rebrowser-puppeteer';
 import * as fs from 'fs';
 import * as path from 'path';
 
