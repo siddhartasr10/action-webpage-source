@@ -1,90 +1,54 @@
 # 🌐 Simple Web Page Source Code Downloader
 
-A lightweight GitHub Action that downloads the **source code of a web page**, including its HTML and CSS resources, and saves them on the GitHub Actions runner.
+A lightweight GitHub Action that downloads the **source code of one or more web pages**, including their HTML (and optionally CSS), and saves them on the GitHub Actions runner.
 
 This project is based on the [Web Page Snapshot Action](https://github.com/SimpERROR/web-page-snapshot-action) by **SimpERROR**. The original project was designed to take screenshots of web pages; this fork repurposes its structure to download web page source files instead.
 
 ## 🚀 How it works
 
-The action receives a URL, downloads the page source, and saves the resulting files on the runner.
+The action reads a list of URLs from a `websites.txt` file (one URL per line) that must be present in the action’s working directory.  
+For each URL it:
 
-Currently, the action is designed to download:
+1. Opens the page with a headless browser
+2. Waits for the page to stabilize
+3. Saves the HTML source
+4. Optionally collects and saves the CSS stylesheets
+5. Optionally copies an `index.html` helper file into each site’s folder
 
-* 📄 HTML source code.
-* 🎨 CSS stylesheets referenced by the page.
+Results are written under a `sites/` directory, organized by hostname.
 
 It can be useful for:
 
-* 📥 Automatically downloading web page source code.
-* 🔍 Inspecting or processing HTML and CSS in CI/CD workflows.
-* 🧪 Testing the source of a web page automatically.
-* 📦 Saving web page source as build artifacts.
-* 🤖 Running automated scraping or analysis workflows.
+* 📥 Automatically downloading web page source code for multiple sites
+* 🔍 Inspecting or processing HTML and CSS in CI/CD workflows
+* 🧪 Testing the source of web pages automatically
+* 📦 Saving web page source as build artifacts
+* 🤖 Running automated scraping or analysis workflows
 
 ## ⚙️ Inputs
 
-| Parameter | Required | Default                                       | Description                                                    |
-| :-------- | :------: | :-------------------------------------------- | :------------------------------------------------------------- |
-| `website` |  **Yes** | `https://www.bilibili.com/video/BV1GJ411x7h7` | The URL of the website whose source code should be downloaded. |
+| Parameter          | Required | Default | Description                                                                 |
+| :----------------- | :------: | :------ | :-------------------------------------------------------------------------- |
+| `include-index`    |    No    | `true`  | Whether to copy an `index.html` helper file into each downloaded site folder. |
+| `save-css`         |    No    | `true`  | Whether to download and save the page’s CSS stylesheets as `style.css`.     |
+
+> The old single-URL `website` input has been removed.  
+> Provide the list of target URLs in a `websites.txt` file (one URL per line) instead.
 
 ## 📤 Outputs
 
-| Parameter   | Description                                                  |
-| :---------- | :----------------------------------------------------------- |
-| `html-path` | The path to the downloaded HTML file on the runner.          |
-| `status`    | The status of the download operation (`success` / `failed`). |
-| `time`      | The time when the download was performed.                    |
+| Parameter       | Description                                                                 |
+| :-------------- | :-------------------------------------------------------------------------- |
+| `source-paths`  | Array (or space-separated list) of paths to the folders containing the downloaded source for each site. |
+| `status`        | The status of the download operation (`success` / `failed`).                |
+| `time`          | The time when the download was performed (ISO 8601).                        |
 
-> More outputs may be added as support for additional resources is implemented.
+## 📁 Expected input file
 
-## 🛠️ Example
-
-<!-- Example workflow will be added later. -->
-
-## 📦 Downloaded resources
-
-The action downloads the HTML source of the requested page and its referenced CSS stylesheets.
-
-For example, a page containing:
-
-```html
-<link rel="stylesheet" href="/css/style.css">
-```
-
-will have both the HTML document and the referenced stylesheet downloaded.
-
-CSS resources referenced through external URLs may also be downloaded when they are accessible to the action.
-
-## 🔧 Technical details
-
-The action runs using **Node.js 20** and its compiled entry point is located at:
+Place a file named `websites.txt` in the working directory of the action.  
+It should contain one URL per line, for example:
 
 ```text
-dist/index.js
-```
-
-The action is defined as:
-
-```yaml
-runs:
-  using: 'node20'
-  main: 'dist/index.js'
-```
-
-## ⚠️ Notes
-
-The action downloads the resources returned by the target website. It does not necessarily represent the final DOM or styles after JavaScript has modified the page in a browser.
-
-Websites may block automated requests, require authentication, or return different content depending on headers, cookies, location, or other request properties.
-
-Please make sure you have permission to download and process the content of the websites you target.
-
-## 📄 License
-
-MIT License
-
-### Credits
-
-Originally based on [SimpERROR/web-page-snapshot-action](https://github.com/SimpERROR/web-page-snapshot-action).
-
-The original project was created by **SimpERROR** and provided the initial GitHub Action structure used as the basis for this project.
+https://example.com
+https://another-site.org/page
+https://www.bilibili.com/video/BV1GJ411x7h7
