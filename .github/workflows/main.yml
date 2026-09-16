@@ -1,13 +1,13 @@
 name: main
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *"
-  # push: 
-  #   branches: ["main"]
-  # pull_request: 
-  #   branches: ["main"]
+  on:
+    workflow_dispatch:
+    schedule:
+      - cron: "0 0 * * *"
+    # push: 
+    #   branches: ["main"]
+    # pull_request: 
+    #   branches: ["main"]
 
   permissions: 
     contents: write
@@ -31,6 +31,9 @@ on:
         - name: get source-code
           id: snapshot_step
           uses: ./
+          with:
+            include-index: true
+            save-css: true
           env:
             PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
 

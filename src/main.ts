@@ -57,13 +57,16 @@ async function run() {
         '--disable-gpu'
       ]
     });
+
     const page = await browser.newPage();
     let css = "", finishedSrcPaths = [];
 
-    page.on('response', async (response) => {
-      if (response.request().resourceType() !== 'stylesheet') return;
-      css += await response.text();
-    });
+    if (core.getBooleanInput("save-css")) {
+      page.on('response', async (response) => {
+        if (response.request().resourceType() !== 'stylesheet') return;
+        css += await response.text();
+      });
+    }
 
     const Rootdir = path.join(process.cwd(), 'sites');
     if (!fs.existsSync(Rootdir)) fs.mkdirSync(Rootdir, { recursive: true });
@@ -105,19 +108,23 @@ async function run() {
         core.info(`CSS of ${hostname} linked successfully`);
       }
 
+      fs.writeFileSync(htmlPath, html);
+
       const cssFilename = 'style.css';
       const cssPath = path.join(sourceDir, cssFilename);
 
-      fs.writeFileSync(htmlPath, html);
-      fs.writeFileSync(cssPath, css);
+      if (core.getBooleanInput("save-css")) fs.writeFileSync(cssPath, css);
+
+      finishedSrcPaths.push(sourceDir);
+      core.info("Pushed source: " + pageTitle);
 
       // We copy for each source code the index.html so it can be correctly seen in the github page.
+      if (!core.getBooleanInput("include-index")) continue;
+
       const idxSrcPath = path.join(__dirname, "index.html");
       const idxDestPath = path.join(sourceDir, "index.html");
       fs.copyFileSync(idxSrcPath, idxDestPath);
 
-      finishedSrcPaths.push(sourceDir);
-      core.info("Pushed source: " + pageTitle);
     }
     
     await browser.close();

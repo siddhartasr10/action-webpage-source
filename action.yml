@@ -2,17 +2,22 @@ name: 'Simple web page source code downloader'
 description: 'An action which downloads the page source code.'
 metadata:
   author: 'siddhartasr10'
-  waitFunc: 'SimpERROR_'
+  forked-from: 'SimpERROR_'
 
 branding: 
   icon: download-cloud
   color: purple
 
 inputs:
-  website:
-    description: 'The website to download.'
+  include-index:
+    description: 'Whether to copy an index.html helper into each site folder'
     required: true
-    default: 'https://www.bilibili.com/video/BV1GJ411x7h7'
+    default: true 
+
+  save-css:
+    description: 'Choose if you want to save the site css'
+    required: true
+    default: true 
 
 outputs:
   source-paths:
