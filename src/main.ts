@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import * as puppeteer from 'puppeteer-core';
+import * as puppeteer from 'rebrowser-puppeteer';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -57,13 +57,16 @@ async function run() {
         '--disable-gpu'
       ]
     });
+
     const page = await browser.newPage();
     let css = "", finishedSrcPaths = [];
 
-    page.on('response', async (response) => {
-      if (response.request().resourceType() !== 'stylesheet') return;
-      css += await response.text();
-    });
+    if (core.getBooleanInput("save-css")) {
+      page.on('response', async (response) => {
+        if (response.request().resourceType() !== 'stylesheet') return;
+        css += await response.text();
+      });
+    }
 
     const Rootdir = path.join(process.cwd(), 'sites');
     if (!fs.existsSync(Rootdir)) fs.mkdirSync(Rootdir, { recursive: true });
@@ -90,34 +93,41 @@ async function run() {
       
       // We search for the head tag and kinda do a split but with slice, as split removes the splitted element.
       // We add manually a stylesheet that links to our recovered CSS.
-      const headStartIdx = html.match("<head>")?.index;
+      const headStartIdx = (core.getBooleanInput("save-css")) ? html.match("<head>")?.index : null;
       let htmlSecondHalf = "";
-      if (!headStartIdx) {
-        core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
-        core.info(`Manually change or add a link with an href to style.css`);
-      }
-      else {
-        htmlSecondHalf = html.slice(headStartIdx + "<head>".length);
-        html = html.slice(0, headStartIdx + "<head>".length);
+      if (core.getBooleanInput("save-css")) {
 
-        html += ' <link rel="stylesheet" href="style.css">';
-        html = html + htmlSecondHalf;
-        core.info(`CSS of ${hostname} linked successfully`);
+        if (!headStartIdx) {
+            core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
+            core.info(`Manually change or add a link with an href to style.css`);
+        }
+        else {
+            htmlSecondHalf = html.slice(headStartIdx! + "<head>".length);
+            html = html.slice(0, headStartIdx! + "<head>".length);
+
+            html += ' <link rel="stylesheet" href="style.css">';
+            html = html + htmlSecondHalf;
+            core.info(`CSS of ${hostname} linked successfully`);
+        }
       }
+
+      fs.writeFileSync(htmlPath, html);
 
       const cssFilename = 'style.css';
       const cssPath = path.join(sourceDir, cssFilename);
 
-      fs.writeFileSync(htmlPath, html);
-      fs.writeFileSync(cssPath, css);
+      if (core.getBooleanInput("save-css")) fs.writeFileSync(cssPath, css);
+
+      finishedSrcPaths.push(sourceDir);
+      core.info("Pushed source: " + pageTitle);
 
       // We copy for each source code the index.html so it can be correctly seen in the github page.
+      if (!core.getBooleanInput("include-index")) continue;
+
       const idxSrcPath = path.join(__dirname, "index.html");
       const idxDestPath = path.join(sourceDir, "index.html");
       fs.copyFileSync(idxSrcPath, idxDestPath);
 
-      finishedSrcPaths.push(sourceDir);
-      core.info("Pushed source: " + pageTitle);
     }
     
     await browser.close();
