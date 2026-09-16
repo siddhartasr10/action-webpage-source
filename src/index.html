@@ -21,7 +21,7 @@
     const trimmedURI = document.baseURI.slice(0,document.baseURI.length-1);
     const PATH = String(trimmedURI.split("/").slice(4));
 
-    fetch(`https://api.github.com/repos/siddhartasr10/web-page-snapshot-html-action/contents/${PATH}?ref=gh-pages`)
+    fetch(`https://api.github.com/repos/siddhartasr10/webpage-snapshot-html-action/contents/${PATH}?ref=gh-pages`)
       .then(res => res.json())
       .then(data => {
         const list = document.getElementById('files');
