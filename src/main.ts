@@ -78,7 +78,6 @@ async function run() {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const pageTitle = await page.title();
 
-      // const snapshotDir = path.join(process.cwd(), 'snapshots');
       const hostname = new URL(websites[i]).hostname;
 
       const sourceDir = path.join(Rootdir, hostname);
@@ -128,9 +127,6 @@ async function run() {
     core.setOutput('source-paths', finishedSrcPaths);
     core.setOutput('time', time);
     core.setOutput('status', 'success');
-
-    // core.setOutput('image-size', imageSize);
-    // core.info(`Image size: ${imageSize}`);
 
     core.info(`Snapshot saved to: ${finishedSrcPaths}`);
     core.info(`Status: success`);
