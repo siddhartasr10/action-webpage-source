@@ -19,6 +19,11 @@ inputs:
     required: true
     default: true 
 
+  skip-on-throw:
+    description: 'Whether to skip a page if it throws an error o try again'
+    required: true
+    default: false
+
 outputs:
   source-paths:
     description: 'The path to the saved html file.'

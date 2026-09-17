@@ -27,9 +27,10 @@
         - name: get source-code
           id: snapshot_step
           uses: ./
-          with:
+          with: # Default values are set explictly only for documentation purposes
             include-index: true
             save-css: true
+            skip-on-throw: false
           env:
             PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
 

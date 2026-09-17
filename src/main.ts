@@ -2,11 +2,15 @@ import * as core from '@actions/core';
 import * as puppeteer from 'rebrowser-puppeteer';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as net from 'net' 
 
 
 const MAXTHROWS = 3;
 let currentThrows = 0;
+
+const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
+  .trimEnd()
+  .split("\n")
+  .reverse(); // So we can iterate the list backwards but we can process the elements in their natural order
 
 async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000): Promise<void> {
   const startTime = Date.now();
@@ -43,10 +47,6 @@ async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000):
 
 async function run() {
   try {
-    const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
-      .trimEnd()
-      .split("\n")
-      .reverse(); // So we can iterate the list backwards but we can process the elements in their natural order
 
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
@@ -78,6 +78,7 @@ async function run() {
     const Rootdir = path.join(process.cwd(), 'sites');
     if (!fs.existsSync(Rootdir)) fs.mkdirSync(Rootdir, { recursive: true });
 
+    // reverse so i can remove them as I go in case i want to retry after a throw.
     for (let i = websites.length-1; i >= 0; i--) {
       css = "";
 
@@ -103,9 +104,8 @@ async function run() {
       const headStartIdx = (core.getBooleanInput("save-css")) ? html.match("<head>")?.index : null;
       let htmlSecondHalf = "";
       if (core.getBooleanInput("save-css")) {
-
         if (!headStartIdx) {
-            core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
+            core.info(`<head> tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
             core.info(`Manually change or add a link with an href to style.css`);
         }
         else {
@@ -153,11 +153,21 @@ async function run() {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
-    core.info("Que tal se ve el mensaje del error de dns spliteao?" + (error as Error).message.split(" "));
-    if (error instanceof Error && error.message.split(" ")[0] == "net::ERR_NAME_NOT_RESOLVED") core.info("Error de dns aAH");
-    // core.info(`Error direct print: ${error},  error name or all propertynames ${(error instanceof Error) ? error.name : Object.getOwnPropertyNames(error)}`);
-    // core.info(`Error Property names ${Object.getOwnPropertyNames(error)}, Los property decriptors illo ${Object.getOwnPropertyDescriptors(error)} del cual, el primero de la lista es: ${Object.getOwnPropertyDescriptors(error)[0]}`);
-    // core.info(`Las propiedades dabidas son stack: ${(error as Error).stack}, name: ${(error as Error).name} y message: ${(error as Error).message}`);
+    currentThrows++;
+
+    // Err handling for DNS resolving error.
+    if (error instanceof Error && error.message.split(" ")[0] == "net::ERR_NAME_NOT_RESOLVED") {
+      core.info("DNS couldn't be resolved for website: " + websites.at(-1));
+      core.info(`${MAXTHROWS - currentThrows} throws left, after that, program will finish uncompletely if necessary`);
+      if (core.getBooleanInput('skip-on-throw')) {
+        core.info("Skip on throw is enabled so skipping problematic page");
+        websites.pop();
+}
+      if (currentThrows <= MAXTHROWS) return run();
+      core.setFailed("Max number of throws passed, failing action...");
+      process.exitCode = 1;
+      return;
+    }
 
     core.setFailed(`Error: ${errorMessage}`);
     
