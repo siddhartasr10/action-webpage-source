@@ -153,7 +153,12 @@ async function run() {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
-    core.info(`Error direct print: ${error}`);
+    core.info("Que tal se ve el mensaje del error de dns spliteao?" + (error as Error).message.split(" "));
+    if (error instanceof Error && error.message.split(" ")[0] == "net::ERR_NAME_NOT_RESOLVED") core.info("Error de dns aAH");
+    // core.info(`Error direct print: ${error},  error name or all propertynames ${(error instanceof Error) ? error.name : Object.getOwnPropertyNames(error)}`);
+    // core.info(`Error Property names ${Object.getOwnPropertyNames(error)}, Los property decriptors illo ${Object.getOwnPropertyDescriptors(error)} del cual, el primero de la lista es: ${Object.getOwnPropertyDescriptors(error)[0]}`);
+    // core.info(`Las propiedades dabidas son stack: ${(error as Error).stack}, name: ${(error as Error).name} y message: ${(error as Error).message}`);
+
     core.setFailed(`Error: ${errorMessage}`);
     
     core.setOutput('status', 'failed');
