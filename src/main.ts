@@ -165,7 +165,7 @@ async function run() {
 }
       if (currentThrows <= MAXTHROWS) return run();
       core.setFailed("Max number of throws passed, failing action...");
-      process.exitCode = 1;
+      setTimeout(() => process.exit(1), 3000);
       return;
     }
 
