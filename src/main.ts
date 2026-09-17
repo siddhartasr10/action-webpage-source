@@ -2,6 +2,11 @@ import * as core from '@actions/core';
 import * as puppeteer from 'rebrowser-puppeteer';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as net from 'net' 
+
+
+const MAXTHROWS = 3;
+let currentThrows = 0;
 
 async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000): Promise<void> {
   const startTime = Date.now();
@@ -40,7 +45,9 @@ async function run() {
   try {
     const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
       .trimEnd()
-      .split("\n");
+      .split("\n")
+      .reverse(); // So we can iterate the list backwards but we can process the elements in their natural order
+
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
     core.info(`Launching browser with executable path: ${executablePath}`);
@@ -71,7 +78,7 @@ async function run() {
     const Rootdir = path.join(process.cwd(), 'sites');
     if (!fs.existsSync(Rootdir)) fs.mkdirSync(Rootdir, { recursive: true });
 
-    for (let i = 0; i < websites.length; i++) {
+    for (let i = websites.length-1; i >= 0; i--) {
       css = "";
 
       await page.goto(websites[i], { waitUntil: 'domcontentloaded' });
@@ -127,7 +134,9 @@ async function run() {
       const idxSrcPath = path.join(__dirname, "index.html");
       const idxDestPath = path.join(sourceDir, "index.html");
       fs.copyFileSync(idxSrcPath, idxDestPath);
-
+      
+      // We remove the element off the list, so if the app crashes and we retry we don't repeat.
+      websites.pop();
     }
     
     await browser.close();
@@ -144,12 +153,14 @@ async function run() {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
+    core.info(`Error direct print: ${error}`);
     core.setFailed(`Error: ${errorMessage}`);
     
     core.setOutput('status', 'failed');
     core.setOutput('time', new Date().toISOString());
     core.setOutput('snapshot-path', '');
     core.setOutput('image-size', '');
+    
   }
 }
 
