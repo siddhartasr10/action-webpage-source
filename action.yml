@@ -24,6 +24,11 @@ inputs:
     required: true
     default: false
 
+  max-throws:
+    description: 'Maximum amount of times that the scraper will allow crashing and try again'
+    required: true
+    default: 3
+
 outputs:
   source-paths:
     description: 'The path to the saved html file.'

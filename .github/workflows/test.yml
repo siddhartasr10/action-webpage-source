@@ -29,6 +29,7 @@
           uses: ./
           with:
             skip-on-throw: true
+            max-throws: 68
           env:
             PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
 

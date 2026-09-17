@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 
-const MAXTHROWS = 3;
+const MAXTHROWS = (!isNaN(Number(core.getInput("max-throws")))) ? Number(core.getInput("max-throws")) : 3;
 let currentThrows = 0;
 
 const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
@@ -149,6 +149,9 @@ async function run() {
 
     core.info(`Snapshot saved to: ${finishedSrcPaths}`);
     core.info(`Status: success`);
+
+    // Sometimes it doesn't close after failing retrying and then succeeding.
+    return await new Promise(res => setTimeout(() => res(process.exit(0)), 3000));
     
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -157,14 +160,14 @@ async function run() {
 
     // Err handling for DNS resolving error.
     if (error instanceof Error && error.message.split(" ")[0] == "net::ERR_NAME_NOT_RESOLVED") {
-      core.info("DNS couldn't be resolved for website: " + websites.at(-1));
+      core.info("DNS couldn't be resolved for website: " + websites.at(-1)); // de aqui sin contar este palante se ejecutaria para cada error de http
       core.info(`${MAXTHROWS - currentThrows} throws left, after that, program will finish uncompletely if necessary`);
       if (core.getBooleanInput('skip-on-throw')) {
         core.info("Skip on throw is enabled so skipping problematic page");
         websites.pop();
-}
-      if (currentThrows <= MAXTHROWS) return run();
-      core.setFailed("Max number of throws passed, failing action...");
+      }
+      if (currentThrows < MAXTHROWS && websites.length) return run();
+      (websites.length) ? core.setFailed("Max number of throws passed, failing action...") : core.info("No more websites left, last one was skipped");
       setTimeout(() => process.exit(1), 3000);
       return;
     }
