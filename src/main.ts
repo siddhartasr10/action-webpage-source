@@ -3,6 +3,8 @@ import * as puppeteer from 'rebrowser-puppeteer';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { NetError } from './types/NetError';
+
 
 const MAXTHROWS = (!isNaN(Number(core.getInput("max-throws")))) ? Number(core.getInput("max-throws")) : 3;
 let currentThrows = 0;
@@ -158,9 +160,11 @@ async function run() {
     core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
     currentThrows++;
 
-    // Err handling for DNS resolving error.
-    if (error instanceof Error && error.message.split(" ")[0] == "net::ERR_NAME_NOT_RESOLVED") {
-      core.info("DNS couldn't be resolved for website: " + websites.at(-1)); // de aqui sin contar este palante se ejecutaria para cada error de http
+    // Err handling for Net errors.
+    if (error instanceof Error && Object.values(NetError).some(errCode => error.message.includes(errCode)) ) {
+      // TODO: Añadir más mensajes de error personalizados.
+      if (error.message.includes(NetError.NAME_NOT_RESOLVED)) core.info("DNS couldn't be resolved for website: " + websites.at(-1));
+      else core.info(`Net Error: ${error.message.split(" ")[0]}. for website ${websites.at(-1)}`);
       core.info(`${MAXTHROWS - currentThrows} throws left, after that, program will finish uncompletely if necessary`);
       if (core.getBooleanInput('skip-on-throw')) {
         core.info("Skip on throw is enabled so skipping problematic page");
