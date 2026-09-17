@@ -90,7 +90,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download web page source
-        uses: siddhartasr10/webpage-snapshot-html-action@main
+        uses: siddhartasr10/action-webpage-source@main
 
       - name: Upload downloaded pages
         uses: actions/upload-artifact@v4
@@ -116,7 +116,7 @@ After the workflow finishes, the downloaded pages will be available in the `site
 
 ```yaml
 - name: Download web pages
-  uses: siddhartasr10/webpage-snapshot-html-action@main
+  uses: siddhartasr10/action-webpage-source@main
   with:
     include-index: true
     save-css: true
@@ -137,7 +137,7 @@ Example:
 ```yaml
 - name: Download web pages
   id: download
-  uses: siddhartasr10/webpage-snapshot-html-action@main
+  uses: siddhartasr10/action-webpage-source@main
 
 - name: Show result
   run: |
@@ -222,7 +222,7 @@ A common use case is to capture pages during a workflow and make the results ava
 
 ```yaml
 - name: Download web pages
-  uses: siddhartasr10/webpage-snapshot-html-action@main
+  uses: siddhartasr10/action-webpage-source@main
 
 - name: Upload pages
   uses: actions/upload-artifact@v4
