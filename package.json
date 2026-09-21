@@ -1,5 +1,5 @@
 {
-  "name": "web-page-snapshot-html-action",
+  "name": "action-webpage-source",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -10,16 +10,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siddhartasr10/web-page-snapshot-html-action.git"
+    "url": "git+https://github.com/siddhartasr10/action-webpage-source.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/siddhartasr10/web-page-snapshot-html-action/issues"
+    "url": "https://github.com/siddhartasr10/action-webpage-source/issues"
   },
-  "homepage": "https://github.com/siddhartasr10/web-page-snapshot-html-action#readme",
+  "homepage": "https://github.com/siddhartasr10/action-webpage-source#readme",
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/github": "^9.0.0",

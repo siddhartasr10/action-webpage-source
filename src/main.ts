@@ -9,7 +9,12 @@ import { NetError } from './types/NetError';
 const MAXTHROWS = (!isNaN(Number(core.getInput("max-throws")))) ? Number(core.getInput("max-throws")) : 3;
 let currentThrows = 0;
 
-const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
+// Needed to work as an action
+const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
+(process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local __dirname");
+if (!fs.existsSync(path.join(workspace, "websites.txt"))) throw new Error("websites.txt couldn't be found in the workspace " + workspace + "\n Dirname is: " + __dirname);
+
+const websites = fs.readFileSync(path.join(workspace, "websites.txt")).toString()
   .trimEnd()
   .split("\n")
   .reverse(); // So we can iterate the list backwards but we can process the elements in their natural order
