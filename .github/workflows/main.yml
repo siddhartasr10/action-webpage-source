@@ -28,7 +28,8 @@
           id: snapshot_step
           uses: ./
           with: #  All values are set to default explictly only for documentation purposes
-            include-index: true
+            default-index: false
+            custom-index: false
             save-css: true
             skip-on-throw: false
             max-throws: 3

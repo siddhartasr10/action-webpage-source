@@ -28,9 +28,10 @@
           id: snapshot_step
           uses: ./
           with:
-            include-index: false
+            default-index: false
+            custom-index: false
             save-css: false
-            skip-on-throw: false # by default is false.
+            skip-on-throw: false
             max-throws: 0
           env:
             PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}

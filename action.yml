@@ -9,10 +9,16 @@ branding:
   color: purple
 
 inputs:
-  include-index:
-    description: 'Whether to copy an index.html helper into each site folder'
+  default-index:
+    description: 'Whether to copy a default index.html helper into each site folder'
     required: true
-    default: true 
+    default: false
+
+  # Default and custom index cannot be both true.
+  custom-index:
+    description: 'Copies a custom index.html from your repos root (must have one if set true)'
+    required: true
+    default: false
 
   save-css:
     description: 'Choose if you want to save the site css'

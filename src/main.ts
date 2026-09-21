@@ -9,9 +9,10 @@ import { NetError } from './types/NetError';
 const MAXTHROWS = (!isNaN(Number(core.getInput("max-throws")))) ? Number(core.getInput("max-throws")) : 3;
 let currentThrows = 0;
 
+// TODO: Si quiero una variable en el yml que sea websites habra que añadir un if que ignore esta parte y solo la invierta.
 // Needed to work as an action
 const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
-(process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local __dirname");
+(process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local websites.txt");
 if (!fs.existsSync(path.join(workspace, "websites.txt"))) throw new Error("websites.txt couldn't be found in the workspace " + workspace + "\n Dirname is: " + __dirname);
 
 const websites = fs.readFileSync(path.join(workspace, "websites.txt")).toString()
@@ -135,10 +136,17 @@ async function run() {
       finishedSrcPaths.push(sourceDir);
       core.info("Pushed source: " + pageTitle);
 
-      // We copy for each source code the index.html so it can be correctly seen in the github page.
-      if (!core.getBooleanInput("include-index")) continue;
+      // If both false ignore index, if both true raise an error and if one true check which
+      // and as GITHUB_WORKSPACE is the only part that can be undefined, if undefined you know its the gh workspace
+      if (!core.getBooleanInput("default-index") && !core.getBooleanInput("custom-index")) continue;
+      if (core.getBooleanInput("default-index") && core.getBooleanInput("custom-index")) 
+        throw new Error("default-index and custom-index cannot be both true, fix worflow");
+      
+      const idxRoot = (core.getBooleanInput("default-index")) ? __dirname : process.env.GITHUB_WORKSPACE
+      if (!idxRoot) throw new Error("Github workspace not found for custom-index");
 
-      const idxSrcPath = path.join(__dirname, "index.html");
+      // We copy for each source code the index.html so it can be correctly seen in the github page.
+      const idxSrcPath = path.join(idxRoot, "index.html");
       const idxDestPath = path.join(sourceDir, "index.html");
       fs.copyFileSync(idxSrcPath, idxDestPath);
       

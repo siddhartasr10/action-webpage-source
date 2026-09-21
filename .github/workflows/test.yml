@@ -28,6 +28,7 @@
           id: snapshot_step
           uses: ./
           with:
+            default-index: true
             skip-on-throw: true
             max-throws: 68
           env:
