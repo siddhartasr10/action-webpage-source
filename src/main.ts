@@ -95,7 +95,7 @@ async function run() {
       await waitForPageStable(page);
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const pageTitle = await page.title();
+      // const pageTitle = await page.title(); Dropped, titles change and have strange characters.
 
       const hostname = new URL(websites[i]).hostname;
 
@@ -103,7 +103,7 @@ async function run() {
       if (!fs.existsSync(sourceDir)) fs.mkdirSync(sourceDir, { recursive: true });
 
       // const filename = `snapshot-${timestamp}.png`;
-      const htmlFilename = (core.getBooleanInput("overwrite-html")) ? `${pageTitle}.html` : `${pageTitle}-${timestamp}.html`;
+      const htmlFilename = (core.getBooleanInput("overwrite-html")) ? `${hostname}.html` : `${hostname}-${timestamp}.html`;
       const htmlPath = path.join(sourceDir, htmlFilename); // this was snapshotPath 
       let html = await page.content();
       
@@ -137,7 +137,7 @@ async function run() {
 
 
       finishedSrcPaths.push(sourceDir);
-      core.info("Pushed source: " + pageTitle);
+      core.info("Pushed source: " + hostname);
 
       // We remove the element off the list, so if the app crashes and we retry we don't repeat.
       // We do it before the continue part of the indexes.

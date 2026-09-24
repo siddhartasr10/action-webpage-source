@@ -32,8 +32,8 @@ inputs:
     required: true
     default: true
   
-  # If overwrite true here the filename will be the page title only
-  # else it will be 'pagetitle-timestamp.html' for HTML and 'style-timestamp.css' for the CSS 
+  # If overwrite true here the filename will be the page hostname only
+  # else it will be 'hostname-timestamp.html' for HTML and 'style-timestamp.css' for the CSS 
   overwrite-html:
     description: 'Whether to create a single html file that gets overwrote or a new one each time'
     required: true
