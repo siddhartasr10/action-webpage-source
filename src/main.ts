@@ -199,6 +199,8 @@ async function run() {
     core.setOutput('time', new Date().toISOString());
     core.setOutput('snapshot-path', '');
     core.setOutput('image-size', '');
+
+    return await new Promise(res => setTimeout(() => res(process.exit(1)), 3000));
     
   }
 }
