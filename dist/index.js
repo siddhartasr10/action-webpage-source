@@ -262428,6 +262428,19 @@ const core = __importStar(__nccwpck_require__(37484));
 const puppeteer = __importStar(__nccwpck_require__(73985));
 const fs = __importStar(__nccwpck_require__(79896));
 const path = __importStar(__nccwpck_require__(16928));
+const NetError_1 = __nccwpck_require__(33792);
+const MAXTHROWS = (!isNaN(Number(core.getInput("max-throws")))) ? Number(core.getInput("max-throws")) : 3;
+let currentThrows = 0;
+// TODO: Si quiero una variable en el yml que sea websites habra que añadir un if que ignore esta parte y solo la invierta.
+// Needed to work as an action
+const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
+(process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local websites.txt");
+if (!fs.existsSync(path.join(workspace, "websites.txt")))
+    throw new Error("websites.txt couldn't be found in the workspace " + workspace + "\n Dirname is: " + __dirname);
+const websites = fs.readFileSync(path.join(workspace, "websites.txt")).toString()
+    .trimEnd()
+    .split("\n")
+    .reverse(); // So we can iterate the list backwards but we can process the elements in their natural order
 async function waitForPageStable(page, timeout = 30000) {
     const startTime = Date.now();
     await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => { });
@@ -262455,9 +262468,6 @@ async function waitForPageStable(page, timeout = 30000) {
 }
 async function run() {
     try {
-        const websites = fs.readFileSync(path.join(__dirname, "websites.txt")).toString()
-            .trimEnd()
-            .split("\n");
         const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         core.info(`Launching browser with executable path: ${executablePath}`);
         const browser = await puppeteer.launch({
@@ -262484,7 +262494,8 @@ async function run() {
         const Rootdir = path.join(process.cwd(), 'sites');
         if (!fs.existsSync(Rootdir))
             fs.mkdirSync(Rootdir, { recursive: true });
-        for (let i = 0; i < websites.length; i++) {
+        // reverse so i can remove them as I go in case i want to retry after a throw.
+        for (let i = websites.length - 1; i >= 0; i--) {
             css = "";
             await page.goto(websites[i], { waitUntil: 'domcontentloaded' });
             core.info(`Waiting for page: ${websites[i]} to stabilize...`);
@@ -262505,7 +262516,7 @@ async function run() {
             let htmlSecondHalf = "";
             if (core.getBooleanInput("save-css")) {
                 if (!headStartIdx) {
-                    core.info(`Head tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
+                    core.info(`<head> tag of ${hostname} cannot be found. It's CSS won't be loaded.`);
                     core.info(`Manually change or add a link with an href to style.css`);
                 }
                 else {
@@ -262523,12 +262534,21 @@ async function run() {
                 fs.writeFileSync(cssPath, css);
             finishedSrcPaths.push(sourceDir);
             core.info("Pushed source: " + pageTitle);
-            // We copy for each source code the index.html so it can be correctly seen in the github page.
-            if (!core.getBooleanInput("include-index"))
+            // If both false ignore index, if both true raise an error and if one true check which
+            // and as GITHUB_WORKSPACE is the only part that can be undefined, if undefined you know its the gh workspace
+            if (!core.getBooleanInput("default-index") && !core.getBooleanInput("custom-index"))
                 continue;
-            const idxSrcPath = path.join(__dirname, "index.html");
+            if (core.getBooleanInput("default-index") && core.getBooleanInput("custom-index"))
+                throw new Error("default-index and custom-index cannot be both true, fix worflow");
+            const idxRoot = (core.getBooleanInput("default-index")) ? __dirname : process.env.GITHUB_WORKSPACE;
+            if (!idxRoot)
+                throw new Error("Github workspace not found for custom-index");
+            // We copy for each source code the index.html so it can be correctly seen in the github page.
+            const idxSrcPath = path.join(idxRoot, "index.html");
             const idxDestPath = path.join(sourceDir, "index.html");
             fs.copyFileSync(idxSrcPath, idxDestPath);
+            // We remove the element off the list, so if the app crashes and we retry we don't repeat.
+            websites.pop();
         }
         await browser.close();
         const time = new Date().toISOString();
@@ -262537,10 +262557,31 @@ async function run() {
         core.setOutput('status', 'success');
         core.info(`Snapshot saved to: ${finishedSrcPaths}`);
         core.info(`Status: success`);
+        // Sometimes it doesn't close after failing retrying and then succeeding.
+        return await new Promise(res => setTimeout(() => res(process.exit(0)), 3000));
     }
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         core.info("Where am I?" + `dirname: ${__dirname} and cwd: ${process.cwd()}`);
+        currentThrows++;
+        // Err handling for Net errors.
+        if (error instanceof Error && Object.values(NetError_1.NetError).some(errCode => error.message.includes(errCode))) {
+            // TODO: Añadir más mensajes de error personalizados.
+            if (error.message.includes(NetError_1.NetError.NAME_NOT_RESOLVED))
+                core.info("DNS couldn't be resolved for website: " + websites.at(-1));
+            else
+                core.info(`Net Error: ${error.message.split(" ")[0]}. for website ${websites.at(-1)}`);
+            core.info(`${MAXTHROWS - currentThrows} throws left, after that, program will finish uncompletely if necessary`);
+            if (core.getBooleanInput('skip-on-throw')) {
+                core.info("Skip on throw is enabled so skipping problematic page");
+                websites.pop();
+            }
+            if (currentThrows < MAXTHROWS && websites.length)
+                return run();
+            (websites.length) ? core.setFailed("Max number of throws passed, failing action...") : core.info("No more websites left, last one was skipped");
+            setTimeout(() => process.exit(1), 3000);
+            return;
+        }
         core.setFailed(`Error: ${errorMessage}`);
         core.setOutput('status', 'failed');
         core.setOutput('time', new Date().toISOString());
@@ -262550,6 +262591,42 @@ async function run() {
 }
 run();
 //# sourceMappingURL=main.js.map
+
+/***/ }),
+
+/***/ 33792:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.NetError = void 0;
+var NetError;
+(function (NetError) {
+    NetError["NAME_NOT_RESOLVED"] = "net::ERR_NAME_NOT_RESOLVED";
+    NetError["NETWORK_CHANGED"] = "net::ERR_NETWORK_CHANGED";
+    NetError["ADDRESS_UNREACHABLE"] = "net::ERR_ADDRESS_UNREACHABLE";
+    NetError["INTERNET_DISCONNECTED"] = "net::ERR_INTERNET_DISCONNECTED";
+    NetError["CONNECTION_CLOSED"] = "net::ERR_CONNECTION_CLOSED";
+    NetError["CONNECTION_RESET"] = "net::ERR_CONNECTION_RESET";
+    NetError["CONNECTION_REFUSED"] = "net::ERR_CONNECTION_REFUSED";
+    NetError["CONNECTION_ABORTED"] = "net::ERR_CONNECTION_ABORTED";
+    NetError["CONNECTION_FAILED"] = "net::ERR_CONNECTION_FAILED";
+    NetError["TIMED_OUT"] = "net::ERR_TIMED_OUT";
+    NetError["CONNECTION_TIMED_OUT"] = "net::ERR_CONNECTION_TIMED_OUT";
+    NetError["SSL_PROTOCOL_ERROR"] = "net::ERR_SSL_PROTOCOL_ERROR";
+    NetError["CERT_COMMON_NAME_INVALID"] = "net::ERR_CERT_COMMON_NAME_INVALID";
+    NetError["CERT_DATE_INVALID"] = "net::ERR_CERT_DATE_INVALID";
+    NetError["CERT_AUTHORITY_INVALID"] = "net::ERR_CERT_AUTHORITY_INVALID";
+    NetError["TOO_MANY_REDIRECTS"] = "net::ERR_TOO_MANY_REDIRECTS";
+    NetError["ABORTED"] = "net::ERR_ABORTED";
+    NetError["FAILED"] = "net::ERR_FAILED";
+    NetError["BLOCKED_BY_CLIENT"] = "net::ERR_BLOCKED_BY_CLIENT";
+    NetError["EMPTY_RESPONSE"] = "net::ERR_EMPTY_RESPONSE";
+    NetError["HTTP2_PROTOCOL_ERROR"] = "net::ERR_HTTP2_PROTOCOL_ERROR";
+    NetError["QUIC_PROTOCOL_ERROR"] = "net::ERR_QUIC_PROTOCOL_ERROR";
+})(NetError || (exports.NetError = NetError = {}));
+//# sourceMappingURL=NetError.js.map
 
 /***/ }),
 
