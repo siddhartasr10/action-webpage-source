@@ -136,22 +136,26 @@ async function run() {
       finishedSrcPaths.push(sourceDir);
       core.info("Pushed source: " + pageTitle);
 
+      // We remove the element off the list, so if the app crashes and we retry we don't repeat.
+      // We do it before the continue part of the indexes.
+      websites.pop();
+
       // If both false ignore index, if both true raise an error and if one true check which
       // and as GITHUB_WORKSPACE is the only part that can be undefined, if undefined you know its the gh workspace
       if (!core.getBooleanInput("default-index") && !core.getBooleanInput("custom-index")) continue;
       if (core.getBooleanInput("default-index") && core.getBooleanInput("custom-index")) 
         throw new Error("default-index and custom-index cannot be both true, fix worflow");
       
+      // We check which place we get the index if we get it at all
       const idxRoot = (core.getBooleanInput("default-index")) ? __dirname : process.env.GITHUB_WORKSPACE
       if (!idxRoot) throw new Error("Github workspace not found for custom-index");
-
       // We copy for each source code the index.html so it can be correctly seen in the github page.
       const idxSrcPath = path.join(idxRoot, "index.html");
       const idxDestPath = path.join(sourceDir, "index.html");
+
+      if (!fs.existsSync(idxSrcPath)) throw new Error(`No index.html file found in: ${idxSrcPath}, if you're using custom-index add one to your project's root.`);
       fs.copyFileSync(idxSrcPath, idxDestPath);
       
-      // We remove the element off the list, so if the app crashes and we retry we don't repeat.
-      websites.pop();
     }
     
     await browser.close();
