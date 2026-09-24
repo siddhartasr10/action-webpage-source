@@ -31,6 +31,8 @@
             default-index: false
             custom-index: false
             save-css: false
+            overwrite-css: false
+            overwrite-html: false
             skip-on-throw: false
             max-throws: 0
           env:

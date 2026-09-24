@@ -28,6 +28,8 @@
           id: snapshot_step
           uses: ./
           with:
+            overwrite-css: false
+            overwrite-html: true
             default-index: true
             skip-on-throw: true
             max-throws: 68
