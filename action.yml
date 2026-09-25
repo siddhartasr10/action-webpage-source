@@ -1,4 +1,4 @@
-name: 'Simple web page source code downloader'
+name: 'Webpage source code downloader'
 description: 'An action which downloads the page source code.'
 metadata:
   author: 'siddhartasr10'

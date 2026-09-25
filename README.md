@@ -224,7 +224,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download web page source
-        uses: siddhartasr10/action-webpage-source@main
+        uses: siddhartasr10/action-webpage-source@v1
 
       - name: Upload downloaded pages
         uses: actions/upload-artifact@v4
@@ -645,7 +645,7 @@ If you want one HTML and one CSS file per hostname:
 
 ```yaml
 - name: Download web pages
-  uses: siddhartasr10/action-webpage-source@main
+  uses: siddhartasr10/action-webpage-source@v1
   with:
     save-css: true
     overwrite-html: true
@@ -671,7 +671,7 @@ If you want every capture to receive a timestamp:
 
 ```yaml
 - name: Download web pages
-  uses: siddhartasr10/action-webpage-source@main
+  uses: siddhartasr10/action-webpage-source@v1
   with:
     save-css: true
     overwrite-html: false
@@ -699,7 +699,7 @@ If you have your own `index.html` for browsing the captured pages:
 
 ```yaml
 - name: Download web pages
-  uses: siddhartasr10/action-webpage-source@main
+  uses: siddhartasr10/action-webpage-source@v1
   with:
     save-css: true
     overwrite-html: true
@@ -776,7 +776,7 @@ Example:
 ```yaml
 - name: Download web pages
   id: download
-  uses: siddhartasr10/action-webpage-source@main
+  uses: siddhartasr10/action-webpage-source@v1
 
 - name: Show result
   run: |
@@ -801,7 +801,7 @@ A common use case is to capture pages during a workflow and make the results ava
 
 ```yaml
 - name: Download web pages
-  uses: siddhartasr10/action-webpage-source@main
+  uses: siddhartasr10/action-webpage-source@v1
   with:
     save-css: true
     overwrite-html: true
