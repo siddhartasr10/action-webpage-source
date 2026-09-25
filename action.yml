@@ -11,8 +11,8 @@ branding:
 inputs:
   # Accepted syntax: 
   # websites: |- 
-    # "https://lentejas.es"
-    # "https://youtube.com"
+    # https://lentejas.es
+    # https://youtube.com
   websites:
     description: 'An array of websites strings or one only string with urls'
     required: false

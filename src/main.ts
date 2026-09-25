@@ -9,11 +9,6 @@ import { NetError } from './types/NetError';
 const MAXTHROWS = (!isNaN(Number(core.getInput("max-throws")))) ? Number(core.getInput("max-throws")) : 3;
 let currentThrows = 0;
 
-// TODO: Si quiero una variable en el yml que sea websites habra que añadir un if que ignore esta parte y solo la invierta.
-// Needed to work as an action
-//
-//
-// const websitesDirectly = core.getInput("websites").split("\n").reverse();
 let websites: string[] 
 if (!core.getInput("websites")) {
   const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
@@ -29,8 +24,6 @@ else {
   core.info("Websites variable detected in the workflow, reading input...");
   websites = core.getInput("websites").split("\n").reverse();
   core.info("Websites read successfully");
-  core.info(`First page: ${websites.at(-1)}`);
-  core.info(`Entire websites array: ${websites}`);
 }
 
 
@@ -104,7 +97,7 @@ async function run() {
     for (let i = websites.length-1; i >= 0; i--) {
       css = "";
 
-      await page.goto(websites[i].trim(), { waitUntil: 'domcontentloaded' });
+      await page.goto(websites[i], { waitUntil: 'domcontentloaded' });
       core.info(`Waiting for page: ${websites[i]} to stabilize...`);
       await waitForPageStable(page);
 
