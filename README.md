@@ -10,7 +10,9 @@ It is designed for workflows that need to automatically capture, inspect, archiv
 - [🧠 How It Works](#-how-it-works)
   - [Example input](#example-input)
 - [🚀 Usage](#-usage)
-  - [1. Create `websites.txt`](#1-create-websitestxt)
+  - [1. Provide the websites](#1-provide-the-websites)
+    - [Option A — `websites` input](#option-a--websites-input)
+    - [Option B — `websites.txt`](#option-b--websitestxt)
   - [2. Add the action to your workflow](#2-add-the-action-to-your-workflow)
 - [⚙️ Inputs](#%EF%B8%8F-inputs)
 - [📄 HTML Files](#-html-files)
@@ -64,7 +66,9 @@ It is designed for workflows that need to automatically capture, inspect, archiv
 
 # 🧠 How It Works
 
-The action reads URLs from a `websites.txt` file in the workflow's working directory.
+The action accepts URLs in **two ways**: through the `websites` workflow input or through a `websites.txt` file in the workflow's working directory.
+
+If the `websites` input is provided, it **takes precedence** and `websites.txt` is ignored. If the input is not provided, the action falls back to `websites.txt`.
 
 Each URL is processed individually:
 
@@ -128,15 +132,44 @@ The URL path does not affect the directory name.
 
 # 🚀 Usage
 
-## 1. Create `websites.txt`
+## 1. Provide the websites
 
-Add a file named:
+The action supports **two ways** to provide the URLs you want to capture.
+
+### Option A — `websites` input
+
+You can provide the URLs directly in your workflow using the `websites` input. This is useful when the URL list belongs to the workflow itself or you want to generate the list without committing a separate file.
+
+A single URL works:
+
+```yaml
+with:
+  websites: https://example.com
+```
+
+You can also provide multiple URLs using a YAML multiline string:
+
+```yaml
+with:
+  websites: |-
+    https://example.com
+    https://another-site.org/page
+    https://www.bilibili.com/video/BV1GJ411x7h7
+```
+
+Use **one URL per line**.
+
+> **Priority:** If the `websites` input is provided, it takes precedence over `websites.txt`. When `websites` is set, the action does **not** read `websites.txt`.
+
+### Option B — `websites.txt`
+
+If you do not provide the `websites` input, the action reads a file named:
 
 ```text
 websites.txt
 ```
 
-to the **root of your repository**.
+from the **workflow's working directory**. In the usual setup, this means placing it in the root of your repository.
 
 Example:
 
@@ -171,8 +204,6 @@ sites/
 ├── example.org/
 └── www.example.net/
 ```
-
----
 
 # 2. Add the action to your workflow
 
@@ -210,6 +241,7 @@ After the workflow finishes, the downloaded pages will be available in the `site
 
 | Input            | Required | Default | Description                                                                                             |
 | :--------------- | :------: | :-----: | :------------------------------------------------------------------------------------------------------ |
+| `websites`       |    No    | —       | URLs to process. Accepts a single URL or multiple URLs as a multiline string. Takes precedence over `websites.txt`. |
 | `default-index`  |    Yes   | `false` | Copies the action's built-in `index.html` helper into each site folder.                                 |
 | `custom-index`   |    Yes   | `false` | Copies an `index.html` from your repository root into each site folder.                                 |
 | `save-css`       |    Yes   |  `true` | Downloads the page's loaded CSS and saves it alongside the HTML.                                        |
