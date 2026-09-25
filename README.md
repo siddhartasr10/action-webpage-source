@@ -4,6 +4,48 @@ A GitHub Action that uses a headless browser to **load one or more web pages and
 
 It is designed for workflows that need to automatically capture, inspect, archive, test, or process the source of web pages.
 
+## 📑 Table of Contents
+
+- [✨ Features](#-features)
+- [🧠 How It Works](#-how-it-works)
+  - [Example input](#example-input)
+- [🚀 Usage](#-usage)
+  - [1. Create `websites.txt`](#1-create-websitestxt)
+  - [2. Add the action to your workflow](#2-add-the-action-to-your-workflow)
+- [⚙️ Inputs](#%EF%B8%8F-inputs)
+- [📄 HTML Files](#-html-files)
+  - [`overwrite-html: true`](#overwrite-html-true)
+  - [`overwrite-html: false`](#overwrite-html-false)
+- [🎨 CSS Files](#-css-files)
+  - [`overwrite-css: true`](#overwrite-css-true)
+  - [`overwrite-css: false`](#overwrite-css-false)
+  - [`save-css` takes priority](#save-css-takes-priority)
+- [🔗 CSS and HTML](#-css-and-html)
+  - [📊 Quick Reference](#-quick-reference)
+- [🔗 HTML & CSS File Relationships](#-html--css-file-relationships)
+  - [🔄 Both overwrite options enabled](#-both-overwrite-options-enabled)
+  - [📄 Overwrite HTML, timestamp CSS](#-overwrite-html-timestamp-css)
+  - [📚 Timestamp HTML, overwrite CSS](#-timestamp-html-overwrite-css)
+  - [🕐 Timestamp both HTML and CSS](#-timestamp-both-html-and-css)
+- [🧭 Default Index](#-default-index)
+- [🛠️ Custom Index](#-custom-index)
+  - [`index.html` is required](#-indexhtml-is-required)
+- [⚠️ `default-index` and `custom-index`](#️-default-index-and-custom-index)
+  - [Built-in index](#built-in-index)
+  - [Custom index](#custom-index)
+  - [No index](#no-index)
+- [⭐ Example Configurations](#-example-configurations)
+  - [🔄 Keep only the latest capture](#-keep-only-the-latest-capture)
+  - [📚 Keep a history of captures](#-keep-a-history-of-captures)
+  - [🎨 Use a custom viewer](#-use-a-custom-viewer)
+- [🔁 Error Handling & Retries](#-error-handling--retries)
+- [📤 Outputs](#-outputs)
+- [📦 Saving Results as an Artifact](#-saving-results-as-an-artifact)
+- [🧪 Use Cases](#-use-cases)
+- [⚠️ Limitations](#️-limitations)
+- [🙏 Credits](#-credits)
+- [📄 License](#-license)
+
 ## ✨ Features
 
 * 🌐 Download source from multiple URLs in a single workflow
