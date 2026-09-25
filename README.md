@@ -20,15 +20,14 @@ It is designed for workflows that need to automatically capture, inspect, archiv
   - [`overwrite-css: true`](#overwrite-css-true)
   - [`overwrite-css: false`](#overwrite-css-false)
   - [`save-css` takes priority](#save-css-takes-priority)
-- [🔗 CSS and HTML](#-css-and-html)
-  - [📊 Quick Reference](#-quick-reference)
 - [🔗 HTML & CSS File Relationships](#-html--css-file-relationships)
+  - [📊 Quick Reference](#-quick-reference)
   - [🔄 Both overwrite options enabled](#-both-overwrite-options-enabled)
   - [📄 Overwrite HTML, timestamp CSS](#-overwrite-html-timestamp-css)
   - [📚 Timestamp HTML, overwrite CSS](#-timestamp-html-overwrite-css)
   - [🕐 Timestamp both HTML and CSS](#-timestamp-both-html-and-css)
 - [🧭 Default Index](#-default-index)
-- [🛠️ Custom Index](#-custom-index)
+- [🛠️ Custom Index](#%EF%B8%8F-custom-index)
   - [`index.html` is required](#-indexhtml-is-required)
 - [⚠️ `default-index` and `custom-index`](#️-default-index-and-custom-index)
   - [Built-in index](#built-in-index)
@@ -249,34 +248,9 @@ sites/
     └── example.com.html
 ```
 
-Running the action again for the same hostname writes to:
-
-```text
-example.com.html
-```
-
-again.
+Running the action again for the same hostname overwrites `example.com.html`.
 
 This is useful when you only want to keep the **latest captured version** of each page.
-
-### Example
-
-```yaml
-- name: Download web pages
-  uses: siddhartasr10/action-webpage-source@main
-  with:
-    overwrite-html: true
-```
-
-Output:
-
-```text
-sites/
-└── example.com/
-    └── example.com.html
-```
-
----
 
 ## `overwrite-html: false`
 
@@ -289,12 +263,6 @@ A timestamp is added to the hostname:
 For example:
 
 ```text
-example.com-2026-09-24T12-30-45-123Z.html
-```
-
-A later capture creates another file:
-
-```text
 sites/
 └── example.com/
     ├── example.com-2026-09-24T12-30-45-123Z.html
@@ -302,8 +270,6 @@ sites/
 ```
 
 This is useful when you want to maintain a **history of HTML snapshots** instead of replacing the previous capture.
-
----
 
 # 🎨 CSS Files
 
@@ -332,15 +298,7 @@ sites/
     └── style.css
 ```
 
-Running the action again replaces the existing:
-
-```text
-style.css
-```
-
-with the latest captured CSS.
-
----
+Running the action again replaces the existing `style.css` with the latest captured CSS.
 
 ## `overwrite-css: false`
 
@@ -350,14 +308,12 @@ A timestamp is added to the CSS filename:
 style-<timestamp>.css
 ```
 
-For example:
+Example:
 
 ```text
 sites/
 └── example.com/
-    ├── example.com-2026-09-24T12-30-45-123Z.html
     ├── style-2026-09-24T12-30-45-123Z.css
-    ├── example.com-2026-09-24T13-15-22-456Z.html
     └── style-2026-09-24T13-15-22-456Z.css
 ```
 
@@ -375,12 +331,13 @@ then `overwrite-css` has no effect.
 
 No CSS file is downloaded.
 
----
+# 🔗 HTML & CSS File Relationships
 
-# 🔗 CSS and HTML
----
+When CSS downloading is enabled, the action automatically makes the captured HTML reference the CSS file generated for that capture.
 
-## 📊 Quick Reference
+The exact relationship depends on `overwrite-html` and `overwrite-css`.
+
+### 📊 Quick Reference
 
 | `overwrite-html` | `overwrite-css` | HTML files  | CSS files       | HTML → CSS         |
 | :--------------: | :-------------: | :---------- | :-------------- | :----------------- |
@@ -390,29 +347,6 @@ No CSS file is downloaded.
 |      `false`     |     `false`     | Timestamped | Timestamped     | Matching timestamp |
 
 > **Note:** This relationship only applies when `save-css` is enabled. When `save-css: false`, no CSS file is generated and the CSS-saving options are ignored.
-
-
-
-When CSS saving is enabled, the action also adds a stylesheet reference to the captured HTML:
-
-```html
-<link rel="stylesheet" href="style.css">
-```
-
-or, when timestamped CSS is enabled:
-
-```html
-<link rel="stylesheet" href="style-2026-09-24T12-30-45-123Z.css">
-```
-
-This allows the captured HTML to reference the CSS file generated alongside it.
-
-If the captured page does not contain a detectable `<head>` tag, the CSS file is still saved, but the action cannot automatically insert the stylesheet link.
-# 🔗 HTML & CSS File Relationships
-
-When CSS downloading is enabled, the action automatically makes the captured HTML reference the CSS file generated for that capture.
-
-The exact relationship depends on `overwrite-html` and `overwrite-css`.
 
 ## 🔄 Both overwrite options enabled
 
@@ -460,9 +394,7 @@ sites/
     └── style-2026-09-24T14-00-00-000Z.css
 ```
 
-Because there is only one HTML file, it is updated to reference the **latest CSS file**.
-
-For example, after the latest run:
+The single HTML file is updated to reference the **latest CSS file**:
 
 ```html
 <link rel="stylesheet" href="style-2026-09-24T14-00-00-000Z.css">
@@ -493,13 +425,11 @@ sites/
 
 **All generated HTML files point to the same `style.css`.**
 
-For example:
-
 ```html
 <link rel="stylesheet" href="style.css">
 ```
 
-This means that when `style.css` is replaced by a newer capture, older HTML snapshots will also reference the **current** CSS file rather than preserving the CSS that existed when that HTML was captured.
+When `style.css` is replaced by a newer capture, older HTML snapshots also reference the **current** CSS file rather than preserving the CSS that existed when that HTML was captured.
 
 ---
 
@@ -535,9 +465,6 @@ and:
 ```
 
 This allows HTML and CSS snapshots to remain associated with each other.
-
-
----
 
 # 🧭 Default Index
 
