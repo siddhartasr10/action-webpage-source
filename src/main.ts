@@ -13,18 +13,26 @@ let currentThrows = 0;
 // Needed to work as an action
 //
 //
-const websitesDirectly = core.getInput("websites");
-core.info(`Websites variable array from yml: ${websitesDirectly}`);
-core.info(`Splitted by newlines: ${websitesDirectly.split("\n")}`);
+// const websitesDirectly = core.getInput("websites").split("\n").reverse();
+let websites: string[] 
+if (!core.getInput("websites")) {
+  const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
+  (process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local websites.txt");
+  if (!fs.existsSync(path.join(workspace, "websites.txt"))) throw new Error("websites.txt couldn't be found in the workspace " + workspace + "\n Dirname is: " + __dirname);
 
-const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
-(process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local websites.txt");
-if (!fs.existsSync(path.join(workspace, "websites.txt"))) throw new Error("websites.txt couldn't be found in the workspace " + workspace + "\n Dirname is: " + __dirname);
-
-const websites = fs.readFileSync(path.join(workspace, "websites.txt")).toString()
+  websites = fs.readFileSync(path.join(workspace, "websites.txt")).toString()
   .trimEnd()
   .split("\n")
   .reverse(); // So we can iterate the list backwards but we can process the elements in their natural order
+}
+else {
+  core.info("Websites variable detected in the workflow, reading input...");
+  websites = core.getInput("websites").split("\n").reverse();
+  core.info("Websites read successfully");
+  core.info(`First page: ${websites.at(-1)}`);
+  core.info(`Entire websites array: ${websites}`);
+}
+
 
 async function waitForPageStable(page: puppeteer.Page, timeout: number = 30000): Promise<void> {
   const startTime = Date.now();
@@ -96,7 +104,7 @@ async function run() {
     for (let i = websites.length-1; i >= 0; i--) {
       css = "";
 
-      await page.goto(websites[i], { waitUntil: 'domcontentloaded' });
+      await page.goto(websites[i].trim(), { waitUntil: 'domcontentloaded' });
       core.info(`Waiting for page: ${websites[i]} to stabilize...`);
       await waitForPageStable(page);
 

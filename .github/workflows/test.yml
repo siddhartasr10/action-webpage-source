@@ -34,9 +34,8 @@
             skip-on-throw: true
             max-throws: 68
             websites: |-
-              "https://lentejas.es"
-              "https://youtube.com"
-              "https://google.es"
+              https://youtube.com
+              https://google.es
           env:
             PUPPETEER_EXECUTABLE_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
 

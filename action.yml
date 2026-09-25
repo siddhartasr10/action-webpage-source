@@ -9,10 +9,13 @@ branding:
   color: purple
 
 inputs:
+  # Accepted syntax: 
+  # websites: |- 
+    # "https://lentejas.es"
+    # "https://youtube.com"
   websites:
     description: 'An array of websites strings or one only string with urls'
     required: false
-    default: false
 
   default-index:
     description: 'Whether to copy a default index.html helper into each site folder'
