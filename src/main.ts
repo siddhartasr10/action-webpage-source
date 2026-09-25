@@ -11,6 +11,12 @@ let currentThrows = 0;
 
 // TODO: Si quiero una variable en el yml que sea websites habra que añadir un if que ignore esta parte y solo la invierta.
 // Needed to work as an action
+//
+//
+const websitesDirectly = core.getInput("websites");
+core.info(`Websites variable array from yml: ${websitesDirectly}`);
+core.info(`Splitted by newlines: ${websitesDirectly.split("\n")}`);
+
 const workspace = process.env.GITHUB_WORKSPACE ?? __dirname;
 (process.env.GITHUB_WORKSPACE) ? core.info("Github Workspace found") : core.info("No Github Workspace found, using local websites.txt");
 if (!fs.existsSync(path.join(workspace, "websites.txt"))) throw new Error("websites.txt couldn't be found in the workspace " + workspace + "\n Dirname is: " + __dirname);

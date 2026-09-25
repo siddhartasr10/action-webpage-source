@@ -9,6 +9,11 @@ branding:
   color: purple
 
 inputs:
+  websites:
+    description: 'An array of websites strings or one only string with urls'
+    required: false
+    default: false
+
   default-index:
     description: 'Whether to copy a default index.html helper into each site folder'
     required: true
@@ -38,7 +43,6 @@ inputs:
     description: 'Whether to create a single html file that gets overwrote or a new one each time'
     required: true
     default: false
-
 
   skip-on-throw:
     description: 'Whether to skip a page if it throws an error o try again'
