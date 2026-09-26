@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Índice de archivos</title>
+  <title>File Index</title>
   <style>
     body { font-family: monospace; padding: 20px; background: #f9f9f9; }
     ul { list-style: none; padding: 0; }
@@ -13,15 +13,22 @@
   </style>
 </head>
 <body>
-  <h2>Índice de archivos</h2>
+  <h2>File Index</h2>
+  <p style="color:darkcyan;font-weight:bolder;">  </p>
   <hr>
-  <ul id="files">Cargando...</ul>
+  <ul id="files">Loading....</ul>
 
   <script>
-    const trimmedURI = document.baseURI.slice(0,document.baseURI.length-1);
+    const trimmedURI = document.baseURI.slice(0,document.baseURI.length-1); // removes the last / to avoid empty split element.
+    // Default user constant assumes default github page name, that is the user's name.
+    const USER = (trimmedURI.split("/")[2].match("^.+\.(?=\.github.io)")) ? trimmedURI.split("/")[2].match("^.+\.(?=\.github.io)")[0] : null;
     const PATH = String(trimmedURI.split("/").slice(4));
-
-    fetch(`https://api.github.com/repos/siddhartasr10/action-webpage-source/contents/${PATH}?ref=gh-pages`)
+    const p = document.querySelector("p");
+    function updateP() {
+        if (document.getElementById('files').innerText === 'Loading....' || document.getElementById('files').innerHTML === '')
+            p.innerText = "By default user is set by gh page base domain, change index fetch if files exist but aren't loading";
+    }
+    fetch(`https://api.github.com/repos/${USER}/action-webpage-source/contents/${PATH}?ref=gh-pages`)
       .then(res => res.json())
       .then(data => {
         const list = document.getElementById('files');
@@ -31,7 +38,10 @@
             list.innerHTML += `<li>${item.type === 'dir' ? '📁' : '📄'} <a href="${item.name}">${item.name}</a></li>`;
           }
         });
-      });
+      })
+      .then(() => setTimeout(updateP, 1000))
+      .catch(() => setTimeout(updateP, 1000));
+
   </script>
 </body>
 </html>
