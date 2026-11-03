@@ -90,8 +90,28 @@ async function run() {
       });
     }
 
-    const Rootdir = path.join(process.cwd(), 'sites');
-    if (!fs.existsSync(Rootdir)) fs.mkdirSync(Rootdir, { recursive: true });
+    const rootDir = path.join(process.cwd(), 'sites');
+
+    if (!fs.existsSync(rootDir)) fs.mkdirSync(rootDir, { recursive: true });
+
+    // If both false ignore index, if both true raise an error and if one true check which
+    // and as GITHUB_WORKSPACE is the only part that can be undefined, if undefined you know its the gh workspace
+    // this went on the loop but as one index has to be created on the root folder it has to be defined before it.
+
+    if (core.getBooleanInput("default-index") && core.getBooleanInput("custom-index")) 
+      throw new Error("default-index and custom-index cannot be both true, fix worflow");
+
+    let idxRoot: string | undefined, idxSrcPath: string | undefined;
+    // We check which place we get the index if we get it at all
+    if (core.getBooleanInput("default-index") || core.getBooleanInput("custom-index")) {
+      idxRoot = (core.getBooleanInput("default-index")) ? __dirname : process.env.GITHUB_WORKSPACE
+      if (!idxRoot) throw new Error("Github workspace not found for custom-index"); // dirname always exist so we know only workspace can fail.
+
+      idxSrcPath = path.join(idxRoot, "index.html");
+      const rootIdxDestPath = path.join(rootDir, 'index.html');
+      if (!fs.existsSync(idxSrcPath!)) throw new Error(`No index.html file found in: ${idxSrcPath}, if you're using custom-index add one to your project's root.`);
+      fs.copyFileSync(idxSrcPath, rootIdxDestPath);
+    }
 
     // reverse so i can remove them as I go in case i want to retry after a throw.
     for (let i = websites.length-1; i >= 0; i--) {
@@ -106,7 +126,7 @@ async function run() {
 
       const hostname = new URL(websites[i]).hostname;
 
-      const sourceDir = path.join(Rootdir, hostname);
+      const sourceDir = path.join(rootDir, hostname);
       if (!fs.existsSync(sourceDir)) fs.mkdirSync(sourceDir, { recursive: true });
 
       // const filename = `snapshot-${timestamp}.png`;
@@ -142,7 +162,6 @@ async function run() {
 
       fs.writeFileSync(htmlPath, html);
 
-
       finishedSrcPaths.push(sourceDir);
       core.info("Pushed source: " + hostname);
 
@@ -150,21 +169,10 @@ async function run() {
       // We do it before the continue part of the indexes.
       websites.pop();
 
-      // If both false ignore index, if both true raise an error and if one true check which
-      // and as GITHUB_WORKSPACE is the only part that can be undefined, if undefined you know its the gh workspace
-      if (!core.getBooleanInput("default-index") && !core.getBooleanInput("custom-index")) continue;
-      if (core.getBooleanInput("default-index") && core.getBooleanInput("custom-index")) 
-        throw new Error("default-index and custom-index cannot be both true, fix worflow");
-      
-      // We check which place we get the index if we get it at all
-      const idxRoot = (core.getBooleanInput("default-index")) ? __dirname : process.env.GITHUB_WORKSPACE
-      if (!idxRoot) throw new Error("Github workspace not found for custom-index");
+      if (!core.getBooleanInput("custom-index") && !core.getBooleanInput("default-index")) continue;
       // We copy for each source code the index.html so it can be correctly seen in the github page.
-      const idxSrcPath = path.join(idxRoot, "index.html");
       const idxDestPath = path.join(sourceDir, "index.html");
-
-      if (!fs.existsSync(idxSrcPath)) throw new Error(`No index.html file found in: ${idxSrcPath}, if you're using custom-index add one to your project's root.`);
-      fs.copyFileSync(idxSrcPath, idxDestPath);
+      fs.copyFileSync(idxSrcPath!, idxDestPath);
       
     }
     
